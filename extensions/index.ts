@@ -2,12 +2,13 @@
  * browserwire entry point.
  *
  * Two exposure modes:
- *   - codemode (default): schema stays out of the base prompt, model reaches it
- *     through codemode scripts -> parallel-safe, cheapest per turn.
- *   - direct: registers the same tool for classic calls, for users without codemode.
+ *   - direct (default): the tool is declared to the model while active and stays
+ *     callable from codemode scripts via ctx.executeTool.
+ *   - codemode: schema stays out of the base prompt entirely; the model reaches it
+ *     only through codemode scripts. Set BROWSERWIRE_EXPOSURE=codemode.
  *
  * The split matters: a single fat tool with an `action` enum costs far fewer
- * tokens than ~70 separate tools, and codemode lets the model filter results
+ * tokens than ~87 separate tools, and codemode lets the model filter results
  * (e.g. only errors) before they ever enter the conversation.
  */
 
