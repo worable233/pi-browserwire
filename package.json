@@ -1,0 +1,58 @@
+{
+  "name": "pi-browserwire",
+  "version": "0.2.0",
+  "description": "Drive a real Chrome from pi over CDP — zero dependencies, one compact tool, codemode-native.",
+  "type": "module",
+  "author": "worable233",
+  "license": "MIT",
+  "homepage": "https://github.com/worable233/pi-browserwire#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/worable233/pi-browserwire.git"
+  },
+  "bugs": {
+    "url": "https://github.com/worable233/pi-browserwire/issues"
+  },
+  "bin": {
+    "bw": "./cli/bw.mjs"
+  },
+  "files": [
+    "cli/",
+    "extensions/",
+    "skills/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ],
+    "skills": [
+      "skills/"
+    ]
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "browser",
+    "cdp",
+    "chrome",
+    "devtools",
+    "automation",
+    "debugging",
+    "screenshot",
+    "annotation"
+  ],
+  "scripts": {
+    "check": "node --check cli/bw.mjs",
+    "test": "node --check cli/bw.mjs && echo 'cli syntax ok'"
+  }
+}
