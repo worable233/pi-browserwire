@@ -53,7 +53,9 @@
   note, so the annotation says both what should change and from what to what. The
   diff is taken against the element's real computed style — the annotation
   highlight is removed before reading so its purple fill is never mistaken for the
-  element's background.
+  element's background. The `<tag>` header is a drag handle: hold it (or the dots)
+  to move the panel anywhere in the viewport, clamped so it never leaves the
+  screen. Long property lists otherwise cover the element you are tweaking.
 
 ### Fixed
 - **The panel text was not vertically centred.** Three offsets stacked: the panel

@@ -186,7 +186,7 @@ const MARK_STYLE = {
 /* ==================================================================== */
 
 /** 页面注入代码的版本：改 __bwInit/__bwAnnotator/__bwHotkeys/__bwPicker 时必须 +1 */
-const RUNTIME_V = 7;
+const RUNTIME_V = 8;
 
 function __bwInit(style) {
 	if (window.__bw) {
@@ -851,6 +851,38 @@ function __bwAnnotator() {
 		dots.style.opacity = ".55";
 		tagRow.append(tagLabel, dots);
 		styleBox.append(tagRow);
+
+		// 标题行可拖动：按住圆点（或整行空白处）移动面板，位置夹在视口内
+		Object.assign(tagRow.style, { cursor: "grab", userSelect: "none", touchAction: "none" });
+		tagRow.title = "拖动面板";
+		tagRow.addEventListener("pointerdown", (e) => {
+			if (e.button !== 0) return;
+			e.preventDefault();
+			e.stopPropagation();
+			const x0 = e.clientX;
+			const y0 = e.clientY;
+			const l0 = parseFloat(panel.style.left) || 0;
+			const t0 = parseFloat(panel.style.top) || 0;
+			const pr = panel.getBoundingClientRect();
+			const maxL = Math.max(scrollX + 8, scrollX + innerWidth - pr.width - 8);
+			const maxT = Math.max(scrollY + 8, scrollY + innerHeight - pr.height - 8);
+			const move = (ev) => {
+				panel.style.left =
+					Math.min(Math.max(scrollX + 8, l0 + (ev.clientX - x0)), maxL) + "px";
+				panel.style.top =
+					Math.min(Math.max(scrollY + 8, t0 + (ev.clientY - y0)), maxT) + "px";
+			};
+			const up = () => {
+				panel.style.cursor = "";
+				document.removeEventListener("pointermove", move, true);
+				document.removeEventListener("pointerup", up, true);
+				document.removeEventListener("pointercancel", up, true);
+			};
+			panel.style.cursor = "grabbing";
+			document.addEventListener("pointermove", move, true);
+			document.addEventListener("pointerup", up, true);
+			document.addEventListener("pointercancel", up, true);
+		});
 
 		const propRow = (label, nodes) => {
 			const rr = document.createElement("div");
