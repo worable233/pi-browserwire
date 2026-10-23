@@ -58,6 +58,10 @@
   screen. Long property lists otherwise cover the element you are tweaking.
 
 ### Fixed
+- **The selection highlight vanished as soon as the composer opened**, leaving no
+  way to tell which element the note was attached to. The box was deliberately
+  hidden when selection froze; it now stays pinned to the target, survives mouse
+  movement over the veil, and follows scroll and resize while the panel is open.
 - **The panel text was not vertically centred.** Three offsets stacked: the panel
   had asymmetric padding (8 top / 6 bottom), the row aligned its children to the
   bottom, and the editor added its own padding again. The row is now centred with

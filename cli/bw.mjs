@@ -186,7 +186,7 @@ const MARK_STYLE = {
 /* ==================================================================== */
 
 /** 页面注入代码的版本：改 __bwInit/__bwAnnotator/__bwHotkeys/__bwPicker 时必须 +1 */
-const RUNTIME_V = 8;
+const RUNTIME_V = 9;
 
 function __bwInit(style) {
 	if (window.__bw) {
@@ -497,6 +497,8 @@ function __bwAnnotator() {
 	/** 输入框打开时冻结选框，防止误选下一个元素 */
 	let frozen = false;
 
+	/** 面板打开期间跟随滚动/缩放的清理函数 */
+	let unfollowBox = null;
 	const closePanel = () => {
 		if (panel) panel.remove();
 		panel = null;
@@ -504,6 +506,10 @@ function __bwAnnotator() {
 		editingId = null;
 		frozen = false;
 		box.style.display = "none";
+		if (unfollowBox) {
+			unfollowBox();
+			unfollowBox = null;
+		}
 		if (window.__bwAnnActive) veil.style.pointerEvents = "auto";
 	};
 
@@ -516,7 +522,17 @@ function __bwAnnotator() {
 		panelTarget = el;
 		editingId = existing ? existing.id : null;
 		frozen = true;
-		box.style.display = "none";
+		// 冻结后选框必须留着：否则一打开输入框，用户就不知道自己在标注哪个元素
+		placeBox(el);
+		const follow = () => {
+			if (panelTarget && panelTarget.isConnected) placeBox(panelTarget);
+		};
+		window.addEventListener("scroll", follow, true);
+		window.addEventListener("resize", follow);
+		unfollowBox = () => {
+			window.removeEventListener("scroll", follow, true);
+			window.removeEventListener("resize", follow);
+		};
 		veil.style.pointerEvents = "none";
 		const r = el.getBoundingClientRect();
 
@@ -1124,10 +1140,8 @@ function __bwAnnotator() {
 
 	// 收集：点击 veil 时命中的真实元素
 	veil.addEventListener("mousemove", (e) => {
-		if (frozen) {
-			box.style.display = "none";
-			return;
-		}
+		// 冻结时选框钉在 panelTarget 上，不能被跟随高亮擦掉
+		if (frozen) return;
 		veil.style.pointerEvents = "none";
 		const el = document.elementFromPoint(e.clientX, e.clientY);
 		veil.style.pointerEvents = "auto";
