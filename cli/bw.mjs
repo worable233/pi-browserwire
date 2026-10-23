@@ -18,6 +18,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SELF = fileURLToPath(import.meta.url);
+/** 本文件指纹。daemon 上报它，CLI 升级后旧 daemon 会被自动替换。 */
+const BUILD = (() => {
+	try {
+		return statSync(SELF).mtimeMs;
+	} catch {
+		return 0;
+	}
+})();
 const HOME = homedir();
 
 /**
@@ -1476,7 +1484,9 @@ async function daemonHealth(port) {
 async function ensureDaemon() {
 	const st = readState();
 	const alive = await daemonHealth(st.daemonPort);
-	if (alive) return st.daemonPort;
+	// 同一端口上的 daemon 若来自旧版 CLI（注入逻辑、事件缓冲等已变），直接换掉
+	if (alive && alive.build === BUILD) return st.daemonPort;
+	if (alive) killVerified(st.daemonPid, "__daemon");
 	const port = 9600 + Math.floor(Math.random() * 300);
 	const wsUrl = await browserWsUrl(st.port);
 	const child = spawn(process.execPath, [SELF, "__daemon", wsUrl, String(port)], {
@@ -1532,8 +1542,10 @@ async function runDaemon(wsUrl, port) {
 	browserCdp = await new CDP(wsUrl, { timeoutMs: 15_000 }).open();
 
 	/**
-	 * 注入右键菜单运行时。每次导航后重新注入（导航会销毁注入脚本）。
-	 * 这是「批注入口常驻」的关键：用户任何时候右键即可「添加批注」。
+	 * 注入页面运行时（marks 基础 + 热键 + 批注层）。
+	 * 每次导航后重新注入（导航会销毁注入脚本）。
+	 * 批注层必须一起注入：热键 handler 调用的 window.__bwAnnToggle 由它定义，
+	 * 少了它，用户按热键不会有任何反应。批注层注入后默认隐藏，不干扰浏览。
 	 */
 	const injectMenu = async (sessionId) => {
 		try {
@@ -1542,6 +1554,7 @@ async function runDaemon(wsUrl, port) {
 				{
 					expression: `(() => {
 						if (!window.__bw) (${__bwInit.toString()})(${JSON.stringify(MARK_STYLE)});
+						if (!window.__bwAnn) (${__bwAnnotator.toString()})();
 						if (!window.__bwHotkeyHandler) (${__bwHotkeys.toString()})(${JSON.stringify(readSettings().hotkey || "shift+a")});
 						return true;
 					})()`,
@@ -1678,7 +1691,7 @@ async function runDaemon(wsUrl, port) {
 			res.end(JSON.stringify(obj));
 		};
 		try {
-			if (url.pathname === "/health") return json({ ok: true, seq, events: events.length });
+			if (url.pathname === "/health") return json({ ok: true, seq, events: events.length, build: BUILD });
 			if (url.pathname === "/events") {
 				const since = Number(url.searchParams.get("since") ?? 0);
 				const kind = url.searchParams.get("kind");

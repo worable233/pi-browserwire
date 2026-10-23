@@ -46,6 +46,14 @@
   `BW_SHOT_TTL_MS=0` disables pruning.
 
 ### Fixed
+- **The annotation hotkey did nothing.** The daemon injected the keydown listener
+  but not the annotation layer that defines `window.__bwAnnToggle`, so every press
+  silently returned. The layer is now injected together with the listener, keeps
+  itself hidden, and works on pages opened by a plain `open` — `annotate` is no
+  longer a prerequisite.
+- A daemon started by an older CLI kept serving stale behavior after an upgrade
+  (including the broken injection above). The daemon now reports a build
+  fingerprint and is replaced when the CLI file changes.
 - **Annotations never reached the composer on the default session.** The bridge
   watched `~/.pi/bw/annotations.json` while the CLI writes to
   `~/.pi/bw/sessions/<name>/annotations.json`. The bridge now resolves the same
