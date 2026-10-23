@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 
 const STATE_ROOT = join(homedir(), ".pi", "bw");
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-const NOTE_LIMIT = 120;
+const NOTE_LIMIT = 32;
 
 interface Annotation {
 	id: string;
@@ -56,7 +56,60 @@ function readItems(file: string): Annotation[] {
 	}
 }
 
-/** Compact markdown: one line per annotation, notes truncated. */
+/** 属性名 → 中文短标签，避免 diff 撑长输入框 */
+const PROP_LABEL: Record<string, string> = {
+	color: "色",
+	"background-color": "背景",
+	opacity: "透明度",
+	"font-family": "字体",
+	"font-size": "字号",
+};
+
+/** rgb(224, 224, 224) → #e0e0e0：diff 里颜色占的地方最大 */
+const compactColor = (v: string) => {
+	const m = String(v).match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+	if (!m) return v;
+	const hex = "#" + [m[1], m[2], m[3]].map((x) => Number(x).toString(16).padStart(2, "0")).join("");
+	return m[4] !== undefined && Number(m[4]) !== 1 ? hex + "@" + m[4] : hex;
+};
+
+const clip = (v: string, n: number) => {
+	const t = String(v).replace(/\s+/g, " ").trim();
+	return t.length > n ? t.slice(0, n - 1) + "…" : t;
+};
+
+/** 选择器只留最后两级：完整路径太长，定位元素这两级已经够用 */
+function shortSelector(sel: string): string {
+	const parts = String(sel)
+		.split(" > ")
+		.filter(Boolean)
+		.map((p) => p.replace(/:nth-of-type\(\d+\)/g, ""));
+	return parts.slice(-2).join(" > ") || sel;
+}
+
+/** 百分号编码的中文路径解码后会短很多，也更好读 */
+function shortUrl(url: string): string {
+	try {
+		return decodeURI(url);
+	} catch {
+		return url;
+	}
+}
+
+function fmtChanges(changes: Annotation["changes"]): string {
+	return (changes ?? [])
+		.map((c) => {
+			if (c.prop === "text") return `文本「${clip(c.from, 12)}」→「${clip(c.to, 12)}」`;
+			const label = PROP_LABEL[c.prop] ?? c.prop;
+			return `${label} ${clip(compactColor(c.from), 18)}→${clip(compactColor(c.to), 18)}`;
+		})
+		.join("｜");
+}
+
+/**
+ * 进输入框的内容必须极短：这里会变成用户输入框里的草稿，写成长篇 markdown
+ * 会把输入框整个盖住。一行一条批注，详细信息由 agent 自己跑 `bw ann-export` 取。
+ */
 export function buildSummary(items: Annotation[]): string {
 	if (!items.length) return "";
 	const groups = new Map<string, Annotation[]>();
@@ -65,21 +118,25 @@ export function buildSummary(items: Annotation[]): string {
 		list.push(a);
 		groups.set(a.url, list);
 	}
-	const lines = ["【页面批注】", ""];
-	let i = 0;
+	const lines: string[] = [];
+	// 只有一页时省掉 URL 行：标题已足够定位，URL 由 agent 用 `bw ann-export` 取，
+	// 输入框里每多一行都是在盖住用户的草稿区。
+	const multi = groups.size > 1;
 	for (const [url, list] of groups) {
-		i++;
 		const head = list[0];
 		const tab = typeof head.tabIndex === "number" ? ` · tab ${head.tabIndex}` : "";
-		lines.push(`### ${i}. ${head.title || "(untitled)"}${tab}`, url);
+		lines.push(`【批注】${head.title || "(untitled)"}${tab}`);
+		if (multi) lines.push(shortUrl(url));
 		for (const a of list) {
-			lines.push(`${a.n}. \`${a.selector}\` (${a.tag}) — ${a.note.replace(/\s+/g, " ").slice(0, NOTE_LIMIT)}`);
-			for (const c of a.changes ?? []) lines.push(`   ${c.prop}: ${c.from} → ${c.to}`);
-			if (a.shot) lines.push(`   shot: ${a.shot}`);
+			const note = a.note ? `「${clip(a.note, NOTE_LIMIT)}」` : "";
+			const diff = fmtChanges(a.changes);
+			const shot = a.shot ? "📷" : "";
+			lines.push(
+				`${a.n}. ${shortSelector(a.selector)}${note}${diff ? "｜" + diff : ""}${shot}`,
+			);
 		}
-		lines.push("");
 	}
-	return lines.join("\n").trimEnd();
+	return lines.join("\n");
 }
 
 const sigOf = (items: Annotation[]) => items.map((a) => `${a.id}:${a.updatedAt ?? 0}`).join("|");

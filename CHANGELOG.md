@@ -57,6 +57,16 @@
   to move the panel anywhere in the viewport, clamped so it never leaves the
   screen. Long property lists otherwise cover the element you are tweaking.
 
+### Changed
+- **Annotation push into the composer is now two lines instead of a wall of
+  markdown.** The old summary used `###` headings, the full percent-encoded URL,
+  full selector chains, and wrapped each style change on its own line — it filled
+  the draft area and buried whatever the user was typing. Now: one header line,
+  and one line per annotation with the last two selector steps, the note capped at
+  32 characters, and changes folded inline (`字号 16px→40px｜色 #e0e0e0→#ff3b30`).
+  The URL is dropped entirely for a single page since the title identifies it and
+  the agent can read it back with `bw ann-export`.
+
 ### Fixed
 - **The submit arrow did nothing when annotation mode was started with the hotkey.**
   The page-side outbox hooks (`__bwAnnSave` / `__bwAnnDelete`) were only created by
