@@ -1587,16 +1587,46 @@ async function runDaemon(wsUrl, port) {
 	// 只走 targetCreated 一条路径 attach。attachedToTarget 由我们自己 attach 时也会触发，
 	// 两边都订阅会让同一条 console/network 事件重复入库，所以这里只记录、不再 attach。
 	const attached = new Set();
+	/** targetId -> sessionId，供批注 outbox 定时落盘遍历 */
+	const sessionByTarget = new Map();
 	const attachOnce = async (targetId) => {
 		if (attached.has(targetId)) return;
 		attached.add(targetId);
 		try {
 			const r = await browserCdp.send("Target.attachToTarget", { targetId, flatten: true });
+			sessionByTarget.set(targetId, r.sessionId);
 			await attach(r.sessionId);
 		} catch {
 			attached.delete(targetId);
+			sessionByTarget.delete(targetId);
 		}
 	};
+
+	/**
+	 * 批注落盘心跳。
+	 * 页面里的批注先进 outbox，过去要等下一条 bw 命令才写盘——用户批注完、
+	 * agent 正在等待输入时，备注会一直卡在页面里，输入框永远收不到。
+	 * 这里每 1.5s 扫一遍所有页面，让「按热键批注 → 输入框出现内容」立刻生效。
+	 */
+	const annFlushTimer = setInterval(() => {
+		for (const [targetId, sessionId] of sessionByTarget) {
+			if (!attached.has(targetId)) continue;
+			browserCdp
+				.send("Runtime.evaluate", { expression: ANN_OUTBOX_EXPR, returnByValue: true }, sessionId)
+				.then((r) => {
+					const v = r?.result?.value;
+					if (!v || !Array.isArray(v.o) || !v.o.length) return;
+					const saved = applyAnnEvents({ url: v.url, title: v.title, tabIndex: undefined }, v.o);
+					for (const item of saved) {
+						browserCdp
+							.send("Runtime.evaluate", { expression: ANN_SYNC_EXPR(item), returnByValue: true }, sessionId)
+							.catch(() => {});
+					}
+				})
+				.catch(() => {});
+		}
+	}, 1500);
+	annFlushTimer.unref?.();
 
 	browserCdp.on("Target.targetCreated", async (p) => {
 		if (p.targetInfo.type !== "page") return;
@@ -1607,6 +1637,7 @@ async function runDaemon(wsUrl, port) {
 	});
 	browserCdp.on("Target.targetDestroyed", (p) => {
 		attached.delete(p.targetId);
+		sessionByTarget.delete(p.targetId);
 		push({ kind: "tab", action: "closed", targetId: p.targetId });
 	});
 
@@ -2618,6 +2649,70 @@ async function cmdAnnotate(opts) {
  * 把页面里积压的批注变更取走并落盘。
  * 由每次 bw 命令（含 withPage）顺带调用，所以用户保存后下一条命令就会持久化。
  */
+/** 把页面 outbox 里的事件落盘。返回本次写入的条目，供调用方同步页面徽标。 */
+function applyAnnEvents(pk, events) {
+	const saved = [];
+	for (const ev of events) {
+		if (ev.op === "save") {
+			let id = ev.payload.id ?? undefined;
+			if (!id) {
+				const cur = readAnnotations();
+				const hit = cur.items.find((x) => x.url === pk.url && x.selector === ev.payload.selector);
+				if (hit) id = hit.id;
+			}
+			const item = upsertAnnotation({
+				id,
+				selector: ev.payload.selector,
+				tag: ev.payload.tag,
+				text: ev.payload.text,
+				note: ev.payload.note,
+				noteHtml: ev.payload.noteHtml,
+				images: ev.payload.images,
+				url: pk.url,
+				title: pk.title,
+				tabIndex: pk.tabIndex,
+			});
+			saved.push(item);
+			console.error(`#${item.n} ${item.selector} — ${item.note}`);
+		} else if (ev.op === "delete") {
+			const d = readAnnotations();
+			d.items = d.items.filter((x) => x.id !== ev.payload.id);
+			writeAnnotations(d);
+			console.error(`deleted ${ev.payload.id}`);
+		}
+	}
+	return saved;
+}
+
+/** 页面内徽标同步（把落盘后的 id / 序号 / 富文本写回内存中的 marks）。 */
+const ANN_SYNC_EXPR = (item) => `(() => {
+	const bw = window.__bw;
+	const sel = ${JSON.stringify(item.selector)};
+	const el = document.querySelector(sel);
+	if (!el) return false;
+	let m = bw.marks.find(x => x.el === el);
+	if (m) {
+		m.id = ${JSON.stringify(item.id)};
+		m.n = ${item.n};
+		m.note = ${JSON.stringify(item.note)};
+		m.noteHtml = ${JSON.stringify(item.noteHtml ?? "")};
+		m.images = ${JSON.stringify(item.images ?? [])};
+		if (!m.badge || !m.badge.isConnected) m.badge = bw.badge(m.n, el);
+		else m.badge.textContent = String(m.n);
+	} else {
+		bw.paint(el);
+		bw.marks.push({ id: ${JSON.stringify(item.id)}, n: ${item.n}, selector: sel,
+			note: ${JSON.stringify(item.note)}, noteHtml: ${JSON.stringify(item.noteHtml ?? "")},
+			images: ${JSON.stringify(item.images ?? [])}, el, badge: bw.badge(${item.n}, el) });
+	}
+	bw.sync();
+	return true;
+})()`;
+
+const ANN_OUTBOX_EXPR =
+	"(() => { const o = (window.__bwAnnOut && window.__bwAnnOut.splice(0)) || []; if (!o.length) return null; return { o, url: location.href, title: document.title }; })()";
+
+/** 下一条命令时兜底刷新一次（daemon 未运行时也能落盘）。 */
 async function flushAnnotationOutbox() {
 	const st = readState();
 	if (!(await portAlive(st.port))) return;
@@ -2636,60 +2731,8 @@ async function flushAnnotationOutbox() {
 		const out = await evaluate(cdp, "(window.__bwAnnOut && window.__bwAnnOut.splice(0)) || []");
 		if (!out?.length) return;
 		const pk = await pageKeyOf(st.port, target);
-		for (const ev of out) {
-			if (ev.op === "save") {
-				let targetId = ev.payload.id ?? undefined;
-				if (!targetId) {
-					const cur = readAnnotations();
-					const hit = cur.items.find((x) => x.url === pk.url && x.selector === ev.payload.selector);
-					if (hit) targetId = hit.id;
-				}
-				const item = upsertAnnotation({
-					id: targetId,
-					selector: ev.payload.selector,
-					tag: ev.payload.tag,
-					text: ev.payload.text,
-					note: ev.payload.note,
-					noteHtml: ev.payload.noteHtml,
-					images: ev.payload.images,
-					url: pk.url,
-					title: pk.title,
-					tabIndex: pk.tabIndex,
-				});
-				await evaluate(
-					cdp,
-					`(() => {
-						const bw = window.__bw;
-						const sel = ${JSON.stringify(item.selector)};
-						const el = document.querySelector(sel);
-						if (!el) return false;
-						let m = bw.marks.find(x => x.el === el);
-						if (m) {
-							m.id = ${JSON.stringify(item.id)};
-							m.n = ${item.n};
-							m.note = ${JSON.stringify(item.note)};
-							m.noteHtml = ${JSON.stringify(item.noteHtml ?? "")};
-							m.images = ${JSON.stringify(item.images ?? [])};
-							if (!m.badge || !m.badge.isConnected) m.badge = bw.badge(m.n, el);
-							else m.badge.textContent = String(m.n);
-						} else {
-							bw.paint(el);
-							bw.marks.push({ id: ${JSON.stringify(item.id)}, n: ${item.n}, selector: sel,
-								note: ${JSON.stringify(item.note)}, noteHtml: ${JSON.stringify(item.noteHtml ?? "")},
-								images: ${JSON.stringify(item.images ?? [])}, el, badge: bw.badge(${item.n}, el) });
-						}
-						bw.sync();
-						return true;
-					})()`,
-				);
-				console.error(`#${item.n} ${item.selector} — ${item.note}`);
-			} else if (ev.op === "delete") {
-				const d = readAnnotations();
-				d.items = d.items.filter((x) => x.id !== ev.payload.id);
-				writeAnnotations(d);
-				console.error(`deleted ${ev.payload.id}`);
-			}
-		}
+		const saved = applyAnnEvents(pk, out);
+		for (const item of saved) await evaluate(cdp, ANN_SYNC_EXPR(item));
 	} catch {
 		// 页面可能已导航，忽略
 	} finally {

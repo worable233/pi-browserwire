@@ -46,6 +46,10 @@
   `BW_SHOT_TTL_MS=0` disables pruning.
 
 ### Fixed
+- **Saved annotations could sit in the page forever.** Notes went into an in-page
+  outbox that only the next `bw` command drained, so annotating while the agent
+  was idle waiting for input meant the composer never received anything. The
+  daemon now drains every attached page every 1.5s.
 - **The annotation hotkey did nothing.** The daemon injected the keydown listener
   but not the annotation layer that defines `window.__bwAnnToggle`, so every press
   silently returned. The layer is now injected together with the listener, keeps
