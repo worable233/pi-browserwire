@@ -45,6 +45,16 @@
   `annotations.json` are never deleted, so annotation images cannot break.
   `BW_SHOT_TTL_MS=0` disables pruning.
 
+### Added
+- **Style tweaks in the annotation composer.** The sliders button expands a panel
+  for the selected element: text, text colour, background, opacity, font family
+  and font size, applied live as inline `!important` declarations. `取消` restores
+  the element; saving stores a `from → to` diff per changed property alongside the
+  note, so the annotation says both what should change and from what to what. The
+  diff is taken against the element's real computed style — the annotation
+  highlight is removed before reading so its purple fill is never mistaken for the
+  element's background.
+
 ### Fixed
 - **The panel text was not vertically centred.** Three offsets stacked: the panel
   had asymmetric padding (8 top / 6 bottom), the row aligned its children to the

@@ -186,7 +186,7 @@ const MARK_STYLE = {
 /* ==================================================================== */
 
 /** 页面注入代码的版本：改 __bwInit/__bwAnnotator/__bwHotkeys/__bwPicker 时必须 +1 */
-const RUNTIME_V = 4;
+const RUNTIME_V = 7;
 
 function __bwInit(style) {
 	if (window.__bw) {
@@ -473,6 +473,23 @@ function __bwAnnotator() {
 		});
 	};
 
+	/** 把任意 CSS 颜色转成 #rrggbb；透明返回 null（color input 不接受 alpha） */
+	const cssHex = (color) => {
+		try {
+			const cv = document.createElement("canvas");
+			cv.width = cv.height = 1;
+			const ctx = cv.getContext("2d");
+			ctx.fillStyle = "#000";
+			ctx.fillStyle = color;
+			ctx.fillRect(0, 0, 1, 1);
+			const d = ctx.getImageData(0, 0, 1, 1).data;
+			if (d[3] === 0) return null;
+			return "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+		} catch {
+			return null;
+		}
+	};
+
 	// 输入浮层
 	let panel = null;
 	let panelTarget = null;
@@ -502,6 +519,44 @@ function __bwAnnotator() {
 		box.style.display = "none";
 		veil.style.pointerEvents = "none";
 		const r = el.getBoundingClientRect();
+
+		/* ---- 样式微调：用户点左侧按钮后展开，改的是元素本身的 inline style ---- */
+		let styleMode = false;
+		/** prop -> 首次进入时的计算值，作为 diff 的 from（页面已被改过也不会串味） */
+		const pristine = {};
+		/** prop -> { from, to }，只有真的变了才记录 */
+		const edits = {};
+		const origInline = el.getAttribute("style");
+		const origText = el.textContent ?? "";
+		const noTextEdit = el.childElementCount > 0;
+		const STYLE_PROPS = ["color", "background-color", "opacity", "font-family", "font-size"];
+		// 批注高亮是画在元素自己的 inline style 上的，直接读计算值会把紫色高亮当成
+		// 元素真实背景。读之前先临时摘掉高亮，读完原样还原。
+		const base = (() => {
+			const saved = el.getAttribute("style");
+			if (el.dataset.bwPainted) {
+				for (const p of ["outline", "outline-offset", "background-color", "box-shadow"]) {
+					el.style.removeProperty(p);
+				}
+			}
+			const cs = getComputedStyle(el);
+			const v = {};
+			for (const p of STYLE_PROPS) v[p] = cs.getPropertyValue(p).trim();
+			if (saved === null) el.removeAttribute("style");
+			else el.setAttribute("style", saved);
+			return v;
+		})();
+		const snap = () => {
+			for (const p of STYLE_PROPS) if (!(p in pristine)) pristine[p] = base[p] ?? "";
+		};
+		const apply = (prop, value) => {
+			if (value === "" || value == null) el.style.removeProperty(prop);
+			else el.style.setProperty(prop, value, "important");
+			const now = getComputedStyle(el).getPropertyValue(prop).trim();
+			const from = pristine[prop] ?? now;
+			if (now.replace(/\s+/g, "").toLowerCase() === from.replace(/\s+/g, "").toLowerCase()) delete edits[prop];
+			else edits[prop] = { from, to: now };
+		};
 
 		const shots = existing && Array.isArray(existing.images) ? existing.images.slice() : [];
 
@@ -581,6 +636,10 @@ function __bwAnnotator() {
 		icon.setAttribute("width", "17");
 		icon.setAttribute("height", "17");
 		icon.style.flexShrink = "0";
+		icon.style.cursor = "pointer";
+		icon.style.transition = "opacity .12s";
+		icon.setAttribute("role", "button");
+		icon.setAttribute("title", "调整样式");
 		const stroke = inkDim();
 		icon.innerHTML =
 			'<line x1="4" y1="7" x2="20" y2="7" stroke="' + stroke + '" stroke-width="2" stroke-linecap="round"/>' +
@@ -697,10 +756,11 @@ function __bwAnnotator() {
 
 		const save = () => {
 			const plain = editor.innerText.trim();
-			if (!plain && !shots.length) {
+			if (!plain && !shots.length && !Object.keys(edits).length) {
 				editor.focus();
 				return;
 			}
+			const changes = Object.entries(edits).map(([prop, v]) => ({ prop, from: v.from, to: v.to }));
 			window.__bwAnnSave({
 				id: editingId,
 				selector: window.__bw.selector(el),
@@ -709,6 +769,7 @@ function __bwAnnotator() {
 				note: plain,
 				noteHtml: editor.innerHTML,
 				images: shots,
+				changes,
 			});
 			closePanel();
 		};
@@ -737,10 +798,259 @@ function __bwAnnotator() {
 			}
 		});
 
+		const inputStyle = {
+			background: "rgba(255,255,255,.045)",
+			border: "1px solid " + border(),
+			borderRadius: "8px",
+			color: ink(),
+			font: "13px/1 " + S.font,
+			padding: "7px 9px",
+			outline: "none",
+			minWidth: "0",
+			width: "100%",
+			boxSizing: "border-box",
+		};
+
+		// 样式面板：点左侧图标才展开
+		const styleBox = document.createElement("div");
+		Object.assign(styleBox.style, {
+			display: "none",
+			marginTop: "6px",
+			borderTop: "1px solid " + border(),
+		});
+
+		const tagRow = document.createElement("div");
+		Object.assign(tagRow.style, {
+			display: "flex",
+			alignItems: "center",
+			justifyContent: "space-between",
+			padding: "8px 4px",
+		});
+		const tagLabel = document.createElement("span");
+		tagLabel.textContent = "<" + el.tagName.toLowerCase() + ">";
+		Object.assign(tagLabel.style, {
+			font: "12px/1 ui-monospace, SFMono-Regular, Menlo, monospace",
+			color: inkDim(),
+		});
+		const dots = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		dots.setAttribute("viewBox", "0 0 20 20");
+		dots.setAttribute("width", "14");
+		dots.setAttribute("height", "14");
+		dots.innerHTML =
+			[6, 10, 14]
+				.map(
+					(y) =>
+						[6, 14]
+							.map(
+								(x) =>
+									'<circle cx="' + x + '" cy="' + y + '" r="1.3" fill="' + inkDim() + '"/>',
+							)
+							.join(""),
+				)
+				.join("");
+		dots.style.opacity = ".55";
+		tagRow.append(tagLabel, dots);
+		styleBox.append(tagRow);
+
+		const propRow = (label, nodes) => {
+			const rr = document.createElement("div");
+			Object.assign(rr.style, {
+				display: "flex",
+				alignItems: "center",
+				justifyContent: "space-between",
+				gap: "10px",
+				padding: "7px 4px",
+				borderTop: "1px solid " + border(),
+			});
+			const l = document.createElement("span");
+			l.textContent = label;
+			Object.assign(l.style, { flexShrink: "0", font: "13px/1 " + S.font, color: ink() });
+			const box2 = document.createElement("div");
+			Object.assign(box2.style, {
+				display: "flex",
+				alignItems: "center",
+				gap: "7px",
+				flex: "1",
+				justifyContent: "flex-end",
+				minWidth: "0",
+			});
+			box2.append(...nodes);
+			rr.append(l, box2);
+			styleBox.append(rr);
+			return rr;
+		};
+
+		// 文本
+		const textInput = document.createElement("input");
+		textInput.type = "text";
+		textInput.value = (el.innerText || el.textContent || "").trim().slice(0, 200);
+		textInput.disabled = noTextEdit;
+		if (noTextEdit) textInput.title = "该元素含子元素，文本需在源码里改";
+		Object.assign(textInput.style, inputStyle, noTextEdit ? { opacity: ".5" } : {});
+		textInput.addEventListener("input", () => {
+			if (noTextEdit) return;
+			el.textContent = textInput.value;
+			if (textInput.value === origText.trim()) delete edits.text;
+			else edits.text = { from: origText.trim(), to: textInput.value };
+		});
+		propRow("文本", [textInput]);
+
+		// 颜色 / 背景
+		const colorRow = (label, prop) => {
+			const start = base[prop] || "";
+			const hex = cssHex(start);
+			const sw = document.createElement("input");
+			sw.type = "color";
+			sw.value = hex || "#000000";
+			Object.assign(sw.style, {
+				width: "26px",
+				height: "26px",
+				flexShrink: "0",
+				padding: "0",
+				border: "1px solid " + border(),
+				borderRadius: "999px",
+				background: "transparent",
+				cursor: "pointer",
+			});
+			const tx = document.createElement("input");
+			tx.type = "text";
+			tx.spellcheck = false;
+			tx.value = hex || start || "transparent";
+			Object.assign(tx.style, inputStyle);
+			sw.addEventListener("input", () => {
+				tx.value = sw.value;
+				apply(prop, sw.value);
+			});
+			let t = null;
+			tx.addEventListener("input", () => {
+				clearTimeout(t);
+				t = setTimeout(() => {
+					const v = tx.value.trim();
+					if (!v) return;
+					const h = cssHex(v);
+					if (h) sw.value = h;
+					apply(prop, v);
+				}, 260);
+			});
+			propRow(label, [sw, tx]);
+		};
+		colorRow("文本颜色", "color");
+		colorRow("背景", "background-color");
+
+		// Opacity
+		const opInput = document.createElement("input");
+		opInput.type = "number";
+		opInput.step = "0.05";
+		opInput.min = "0";
+		opInput.max = "1";
+		opInput.value = String(Math.round(parseFloat(base.opacity || "1") * 100) / 100);
+		Object.assign(opInput.style, inputStyle);
+		opInput.addEventListener("input", () => apply("opacity", opInput.value));
+		propRow("Opacity", [opInput]);
+
+		// 字体
+		const curFont = base["font-family"];
+		const FONTS = [
+			["Geist", 'Geist, ui-sans-serif, system-ui, sans-serif'],
+			["系统无衬线", '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'],
+			["Inter", 'Inter, ui-sans-serif, system-ui, sans-serif'],
+			["思源黑体", '"Source Han Sans SC", "Noto Sans SC", sans-serif'],
+			["宋体", '"Songti SC", SimSun, serif'],
+			["等宽", "ui-monospace, SFMono-Regular, Menlo, monospace"],
+		];
+		const fontSel = document.createElement("select");
+		Object.assign(fontSel.style, inputStyle, {
+			cursor: "pointer",
+			appearance: "none",
+			paddingRight: "26px",
+			backgroundImage:
+				"url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23a1a1aa' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>\")",
+			backgroundRepeat: "no-repeat",
+			backgroundPosition: "right 9px center",
+		});
+		if (!FONTS.some(([, v]) => v === curFont)) FONTS.unshift([curFont.split(",")[0].replace(/["']/g, ""), curFont]);
+		for (const [name, v] of FONTS) {
+			const o = document.createElement("option");
+			o.value = v;
+			o.textContent = name;
+			o.style.background = surface();
+			fontSel.append(o);
+		}
+		fontSel.value = curFont;
+		fontSel.addEventListener("change", () => apply("font-family", fontSel.value));
+		propRow("字体", [fontSel]);
+
+		// 字号
+		const fsInput = document.createElement("input");
+		fsInput.type = "number";
+		fsInput.step = "1";
+		fsInput.min = "6";
+		fsInput.value = String(Math.round(parseFloat(base["font-size"] || "16") * 100) / 100);
+		Object.assign(fsInput.style, inputStyle);
+		fsInput.addEventListener("input", () => apply("font-size", fsInput.value ? fsInput.value + "px" : ""));
+		propRow("字号", [fsInput]);
+
+		// footer：取消 + 提交
+		const footer = document.createElement("div");
+		Object.assign(footer.style, {
+			display: "none",
+			alignItems: "center",
+			justifyContent: "space-between",
+			marginTop: "6px",
+			paddingTop: "8px",
+			borderTop: "1px solid " + border(),
+		});
+		const cancel = document.createElement("button");
+		cancel.type = "button";
+		cancel.textContent = "取消";
+		Object.assign(cancel.style, {
+			background: "transparent",
+			border: "1px solid " + border(),
+			borderRadius: "8px",
+			color: inkDim(),
+			font: "500 12px/1 " + S.font,
+			padding: "8px 12px",
+			cursor: "pointer",
+		});
+		cancel.addEventListener("click", () => {
+			// 取消：把元素恢复成打开面板前的样子
+			if (origInline === null) el.removeAttribute("style");
+			else el.setAttribute("style", origInline);
+			if (!noTextEdit) el.textContent = origText;
+			for (const k of Object.keys(edits)) delete edits[k];
+			closePanel();
+		});
+
+		const setStyleMode = (on) => {
+			styleMode = on;
+			snap();
+			styleBox.style.display = on ? "block" : "none";
+			footer.style.display = on ? "flex" : "none";
+			icon.style.opacity = on ? "1" : ".72";
+			if (on) {
+				footer.append(cancel, submit);
+				ph.textContent = "描述这些更改…";
+				// 面板变高后可能超出视口
+				const pr2 = panel.getBoundingClientRect();
+				const maxTop = scrollY + innerHeight - pr2.height - 8;
+				if (parseFloat(panel.style.top) > maxTop) panel.style.top = Math.max(scrollY + 8, maxTop) + "px";
+			} else {
+				submit.style.marginBottom = "2px";
+				row.append(submit);
+				ph.textContent = existing ? "编辑批注…" : "添加评论…";
+			}
+		};
+		icon.addEventListener("click", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			setStyleMode(!styleMode);
+		});
+		setStyleMode(false);
+
 		field.appendChild(editor);
 		field.appendChild(ph);
 		row.append(icon, field, submit);
-		panel.append(thumbs, row);
+		panel.append(thumbs, row, styleBox, footer);
 
 		// 编辑模式：删除按钮
 		if (existing) {
@@ -2832,12 +3142,14 @@ async function applyAnnEvents(pk, events) {
 					note: ev.payload.note,
 					noteHtml: ev.payload.noteHtml,
 					images: ev.payload.images,
+					changes: Array.isArray(ev.payload.changes) ? ev.payload.changes : [],
 					url: pk.url,
 					title: pk.title,
 					tabIndex: pk.tabIndex,
 				});
 				saved.push(item);
-				console.error(`#${item.n} ${item.selector} — ${item.note}`);
+				const ch = item.changes?.length ? ` (+${item.changes.length} style)` : "";
+				console.error(`#${item.n} ${item.selector} — ${item.note}${ch}`);
 			} else if (ev.op === "delete") {
 				data.items = data.items.filter((x) => x.id !== ev.payload.id);
 				console.error(`deleted ${ev.payload.id}`);
@@ -2862,6 +3174,7 @@ const ANN_SYNC_EXPR = (item) => `(() => {
 		m.note = ${JSON.stringify(item.note)};
 		m.noteHtml = ${JSON.stringify(item.noteHtml ?? "")};
 		m.images = ${JSON.stringify(item.images ?? [])};
+	m.changes = ${JSON.stringify(item.changes ?? [])};
 		if (!m.badge || !m.badge.isConnected) m.badge = bw.badge(m.n, el);
 		else m.badge.textContent = String(m.n);
 	} else {
@@ -2937,7 +3250,10 @@ async function cmdAnnList() {
 	}
 	for (const [url, items] of byUrl) {
 		console.log(`▸ ${brief(items[0].title || "", 40)} ${url}`);
-		for (const a of items) console.log(`  #${a.n} ${a.selector} — ${brief(a.note, 80)}`);
+		for (const a of items) {
+			const ch = a.changes?.length ? ` [+${a.changes.length} 样式]` : "";
+			console.log(`  #${a.n} ${a.selector} — ${brief(a.note, 80)}${ch}`);
+		}
 	}
 }
 
@@ -2960,6 +3276,10 @@ async function cmdAnnExport() {
 		lines.push("");
 		for (const a of items) {
 			lines.push(`${a.n}. \`${a.selector}\` (${a.tag}) — ${a.note}`);
+			for (const c of a.changes ?? []) {
+				const label = c.prop === "text" ? "文本" : c.prop;
+				lines.push(`   样式 ${label}: ${c.from} → ${c.to}`);
+			}
 			if (a.shot) lines.push(`   截图：${a.shot}`);
 		}
 		lines.push("");

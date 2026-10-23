@@ -31,6 +31,8 @@ interface Annotation {
 	title?: string;
 	tabIndex?: number;
 	shot?: string;
+	images?: string[];
+	changes?: Array<{ prop: string; from: string; to: string }>;
 	updatedAt?: number;
 }
 
@@ -72,6 +74,7 @@ export function buildSummary(items: Annotation[]): string {
 		lines.push(`### ${i}. ${head.title || "(untitled)"}${tab}`, url);
 		for (const a of list) {
 			lines.push(`${a.n}. \`${a.selector}\` (${a.tag}) — ${a.note.replace(/\s+/g, " ").slice(0, NOTE_LIMIT)}`);
+			for (const c of a.changes ?? []) lines.push(`   ${c.prop}: ${c.from} → ${c.to}`);
 			if (a.shot) lines.push(`   shot: ${a.shot}`);
 		}
 		lines.push("");
