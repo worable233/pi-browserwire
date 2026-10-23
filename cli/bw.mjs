@@ -366,8 +366,62 @@ function __bwHotkeys(hotkey) {
 	}
 	window.__bwHotkeyHandler = handler;
 	document.addEventListener("keydown", handler, true);
+
+	// 子 frame 里的按键不会冒泡到顶层文档，由 frame 桥转发过来
+	const onMsg = (e) => {
+		const d = e && e.data;
+		if (!d || typeof d !== "object" || typeof d.__bwKey !== "string") return;
+		if (d.__bwKey === "escape") {
+			if (window.__bwAnnActive && window.__bwAnn) {
+				window.__bwAnn.closePanel();
+				window.__bwAnn.setActive(false);
+			}
+			return;
+		}
+		if (d.__bwKey !== target) return;
+		window.__bwAnnToggle && window.__bwAnnToggle();
+	};
+	if (window.__bwHotkeyMsgListener) window.removeEventListener("message", window.__bwHotkeyMsgListener);
+	window.__bwHotkeyMsgListener = onMsg;
+	window.addEventListener("message", onMsg);
+
 	window.__bwHotkey = target;
 	return target;
+}
+
+/**
+ * 子 frame 的按键桥。
+ * 跨源 iframe 里的 keydown 不会冒泡到顶层文档，所以每个 frame 各装一个监听，
+ * 把按键规格 postMessage 给顶层，由顶层统一判断并切换批注层。
+ * 不烘焙具体热键——顶层用自己的配置比对，改热键不必重注入子 frame。
+ */
+function __bwFrameKeyBridge() {
+	if (window.__bwFrameBridge) return "already";
+	if (window.top === window) return "top";
+	const norm = (e) => {
+		const parts = [];
+		if (e.ctrlKey || e.metaKey) parts.push("mod");
+		if (e.altKey) parts.push("alt");
+		if (e.shiftKey) parts.push("shift");
+		parts.push(String(e.key).toLowerCase());
+		return parts.join("+");
+	};
+	const post = (msg) => {
+		try {
+			window.top.postMessage(msg, "*");
+		} catch {}
+	};
+	const handler = (e) => {
+		const t = e.target;
+		if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) {
+			if (e.key === "Escape") post({ __bwKey: "escape" });
+			return;
+		}
+		post({ __bwKey: norm(e) });
+	};
+	document.addEventListener("keydown", handler, true);
+	window.__bwFrameBridge = handler;
+	return "ok";
 }
 
 function __bwAnnotator() {
@@ -1556,7 +1610,9 @@ async function runDaemon(wsUrl, port) {
 					expression: `(() => {
 						if (!window.__bw) (${__bwInit.toString()})(${JSON.stringify(MARK_STYLE)});
 						if (!window.__bwAnn) (${__bwAnnotator.toString()})();
-						if (!window.__bwHotkeyHandler) (${__bwHotkeys.toString()})(${JSON.stringify(readSettings().hotkey || "shift+a")});
+						// 无条件重装：函数内部会摘掉旧监听，这样既能让配置变更生效，
+						// 也能在 CLI 升级后替换掉页面里的旧版逻辑（含 message 通道）。
+						(${__bwHotkeys.toString()})(${JSON.stringify(readSettings().hotkey || "shift+a")});
 						return true;
 					})()`,
 					returnByValue: true,
@@ -1574,15 +1630,44 @@ async function runDaemon(wsUrl, port) {
 		await injectMenu(sessionId);
 	});
 
-	/** 给一个 session 打开所需域，并注入右键菜单 */
-	const attach = async (sessionId) => {
+	/** 已注册过 frame 按键桥的 session（导航会重建文档，脚本注册一次即可长期生效） */
+	const bridgeRegistered = new Set();
+	const injectFrameBridge = async (sessionId) => {
+		if (bridgeRegistered.has(sessionId)) return;
+		bridgeRegistered.add(sessionId);
 		try {
-			await browserCdp.send("Page.enable", {}, sessionId);
+			// runImmediately 让已存在的 frame 也立刻装上，不必等下次导航
+			await browserCdp.send(
+				"Page.addScriptToEvaluateOnNewDocument",
+				{ source: `(${__bwFrameKeyBridge.toString()})()`, runImmediately: true },
+				sessionId,
+			);
+		} catch {}
+	};
+
+	/** 给一个 session 打开所需域，并注入页面运行时 */
+	const attach = async (sessionId, targetType) => {
+		try {
 			await browserCdp.send("Runtime.enable", {}, sessionId);
 			await browserCdp.send("Log.enable", {}, sessionId);
 			await browserCdp.send("Network.enable", {}, sessionId);
 		} catch {}
+
+		if (targetType === "iframe") {
+			// 跨源 iframe 是独立 target：只装按键桥，不装批注层（批注层必须在顶层绘制）
+			try {
+				await browserCdp.send("Page.enable", {}, sessionId);
+			} catch {}
+			await injectFrameBridge(sessionId);
+			return;
+		}
+
+		try {
+			await browserCdp.send("Page.enable", {}, sessionId);
+		} catch {}
 		await injectMenu(sessionId);
+		// 同进程子 frame（sandbox 等）走脚本注册，一次覆盖全部 frame
+		await injectFrameBridge(sessionId);
 	};
 
 	// 只走 targetCreated 一条路径 attach。attachedToTarget 由我们自己 attach 时也会触发，
@@ -1590,13 +1675,16 @@ async function runDaemon(wsUrl, port) {
 	const attached = new Set();
 	/** targetId -> sessionId，供批注 outbox 定时落盘遍历 */
 	const sessionByTarget = new Map();
-	const attachOnce = async (targetId) => {
+	/** targetId -> target 类型，区分 page 与 iframe 会话 */
+	const sessionTypes = new Map();
+	const attachOnce = async (targetId, targetType) => {
 		if (attached.has(targetId)) return;
 		attached.add(targetId);
 		try {
 			const r = await browserCdp.send("Target.attachToTarget", { targetId, flatten: true });
 			sessionByTarget.set(targetId, r.sessionId);
-			await attach(r.sessionId);
+			sessionTypes.set(targetId, targetType);
+			await attach(r.sessionId, targetType);
 		} catch {
 			attached.delete(targetId);
 			sessionByTarget.delete(targetId);
@@ -1612,6 +1700,7 @@ async function runDaemon(wsUrl, port) {
 	const annFlushTimer = setInterval(() => {
 		for (const [targetId, sessionId] of sessionByTarget) {
 			if (!attached.has(targetId)) continue;
+			if (sessionTypes.get(targetId) !== "page") continue;
 			browserCdp
 				.send("Runtime.evaluate", { expression: ANN_OUTBOX_EXPR, returnByValue: true }, sessionId)
 				.then(async (r) => {
@@ -1630,8 +1719,9 @@ async function runDaemon(wsUrl, port) {
 	annFlushTimer.unref?.();
 
 	browserCdp.on("Target.targetCreated", async (p) => {
-		if (p.targetInfo.type !== "page") return;
-		await attachOnce(p.targetInfo.targetId);
+		const type = p.targetInfo.type;
+		if (type !== "page" && type !== "iframe") return;
+		await attachOnce(p.targetInfo.targetId, type);
 	});
 	browserCdp.on("Target.attachedToTarget", (p) => {
 		if (p.targetInfo?.targetId) attached.add(p.targetInfo.targetId);
@@ -1639,6 +1729,7 @@ async function runDaemon(wsUrl, port) {
 	browserCdp.on("Target.targetDestroyed", (p) => {
 		attached.delete(p.targetId);
 		sessionByTarget.delete(p.targetId);
+		sessionTypes.delete(p.targetId);
 		push({ kind: "tab", action: "closed", targetId: p.targetId });
 	});
 
@@ -1711,8 +1802,8 @@ async function runDaemon(wsUrl, port) {
 		await browserCdp.send("Target.setDiscoverTargets", { discover: true });
 		const { targetInfos } = await browserCdp.send("Target.getTargets");
 		for (const t of targetInfos) {
-			if (t.type !== "page") continue;
-			await attachOnce(t.targetId);
+			if (t.type !== "page" && t.type !== "iframe") continue;
+			await attachOnce(t.targetId, t.type);
 		}
 	} catch {}
 

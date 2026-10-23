@@ -46,6 +46,17 @@
   `BW_SHOT_TTL_MS=0` disables pruning.
 
 ### Fixed
+- **The hotkey did nothing when focus was inside an iframe.** Pages that embed
+  demos or players in cross-origin frames (a component gallery, a video embed)
+  never see keydown from the top document — the listener was installed there
+  only. Every frame now gets a small bridge that forwards the pressed key spec to
+  the top frame, which decides whether it matches the configured hotkey, so the
+  hotkey is not baked into the frame script and changing it needs no reinjection.
+  The daemon also attaches to `iframe` targets, which it previously ignored.
+- Page runtime injection was skipped whenever `window.__bwHotkeyHandler` already
+  existed, so an upgraded CLI could never update hotkey logic in an already-open
+  page (this is why the message channel above stayed missing). Reinjection is now
+  unconditional and idempotent.
 - **Viewport screenshots returned a stale frame after scrolling.** `shot` used
   `fromSurface` capture with `captureBeyondViewport: false`, which returns the
   last *composited* frame — after a scroll that is the pre-scroll surface, so the
