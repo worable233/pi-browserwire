@@ -1416,6 +1416,8 @@ async function ensureDaemon() {
 	const child = spawn(process.execPath, [SELF, "__daemon", wsUrl, String(port)], {
 		detached: true,
 		stdio: "ignore",
+		// 在 Electron 主进程里 process.execPath 是宿主二进制；不设这个会拉起第二个宿主实例
+		env: process.versions.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: "1" } : process.env,
 	});
 	child.unref();
 	for (let i = 0; i < 50; i++) {

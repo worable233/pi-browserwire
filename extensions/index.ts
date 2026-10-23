@@ -93,6 +93,11 @@ export function runBw(
 	const timeoutMs = opts.timeoutMs ?? 30_000;
 	const env = { ...process.env };
 	if (opts.session) env.BW_SESSION = opts.session;
+	// pi can run inside Electron's main process, where `process.execPath` is the app
+	// binary rather than node. Spawning it directly boots a second app instance
+	// (Chromium profile takeover -> host restart). ELECTRON_RUN_AS_NODE makes the
+	// same binary behave as a plain node runtime. Ignored by real node binaries.
+	if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
 
 	return new Promise((resolve) => {
 		const child = spawn(process.execPath, [cli, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });

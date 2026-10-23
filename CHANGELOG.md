@@ -40,6 +40,13 @@
   defaults render untouched.
 
 ### Fixed
+- **Host restart when pi runs inside Electron.** The extension spawns its own
+  process to run the CLI, and `process.execPath` is the *host application binary*
+  when pi is embedded in an Electron main process, not a node binary. Spawning it
+  booted a second copy of the app, which took over the Chromium profile and
+  restarted the host. The child is now started with `ELECTRON_RUN_AS_NODE=1`, so
+  the same binary behaves as a plain node runtime (verified on Node 24 with a
+  working `WebSocket` global). The internal daemon spawn carries the same flag.
 - Duplicate console/network events from double-attaching targets
   (`targetCreated` + `attachedToTarget`).
 - Viewport override lost on disconnect — `Emulation.setDeviceMetricsOverride` is
