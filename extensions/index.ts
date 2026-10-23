@@ -8,7 +8,7 @@
  *     only through codemode scripts. Set BROWSERWIRE_EXPOSURE=codemode.
  *
  * The split matters: a single fat tool with an `action` enum costs far fewer
- * tokens than ~87 separate tools, and codemode lets the model filter results
+ * tokens than ~84 separate tools, and codemode lets the model filter results
  * (e.g. only errors) before they ever enter the conversation.
  */
 
@@ -62,7 +62,8 @@ const ACTIONS = [
 const READ_ONLY = new Set([
 	"tabs", "text", "html", "attr", "style", "box", "count", "find", "title",
 	"console", "errors", "net", "net-body", "headers", "marks", "ann", "ann-export",
-	"frames", "windows", "cookies", "storage", "status", "doctor", "shot", "pdf",
+	"frames", "windows", "cookies", "storage", "status", "doctor", "shot", "screenshot",
+	"pdf", "outline", "ann-shot",
 ]);
 
 function cliPath(): string {

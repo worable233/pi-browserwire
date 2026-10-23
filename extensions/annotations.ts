@@ -12,9 +12,9 @@
  * which is the documented place where an extension may replace messages.
  */
 
-import { existsSync, readFileSync, watch } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const STATE_ROOT = join(homedir(), ".pi", "bw");
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
@@ -34,10 +34,14 @@ interface Annotation {
 	updatedAt?: number;
 }
 
-function annFile(session?: string): string {
-	return session
-		? join(STATE_ROOT, "sessions", session, "annotations.json")
-		: join(STATE_ROOT, "annotations.json");
+/** 与 CLI 的 resolveSessionName 保持一致：未指定时就是 "default" */
+function resolveSession(explicit?: string): string {
+	const raw = explicit ?? process.env.BW_SESSION ?? "default";
+	return raw.replace(/[^a-zA-Z0-9_-]/g, "") || "default";
+}
+
+function annFile(session: string): string {
+	return join(STATE_ROOT, "sessions", session, "annotations.json");
 }
 
 function readItems(file: string): Annotation[] {
@@ -84,7 +88,8 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 	let pending: Annotation[] = [];
 	const attached = new Set<string>();
 
-	const file = annFile(opts.session);
+	const file = annFile(resolveSession(opts.session));
+	const watchDir = dirname(file);
 
 	const push = (ctx: any) => {
 		const items = readItems(file);
@@ -109,8 +114,11 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 	pi.on("session_start", (_e: any, ctx: any) => {
 		try {
 			if (watcher) return;
-			watcher = watch(STATE_ROOT, { recursive: true, persistent: false }, (_ev: string, f: string | null) => {
-				if (f && !f.endsWith("annotations.json")) return;
+			// Watch the session directory itself. Recursive watching is unsupported on
+			// Linux, and the annotation file always lives exactly one level down.
+			mkdirSync(watchDir, { recursive: true });
+			watcher = watch(watchDir, { persistent: false }, (_ev: string, f: string | null) => {
+				if (f && !String(f).endsWith("annotations.json")) return;
 				schedule(ctx);
 			});
 			schedule(ctx);

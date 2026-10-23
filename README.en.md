@@ -179,7 +179,7 @@ Settings are stored in `~/.pi/bw/sessions/<name>/settings.json`. When the Percho
 - **Compact text output.** Actions return a short line. Large output such as screenshots and full HTML is written to disk and returned as a path.
 - **Persistent browser logs.** A background daemon attaches to the browser target and buffers console, network, and dialog events between CLI calls.
 - **Failures stay visible.** The tool returns an exit code and a reason; it does not silently retry. Callers can choose whether and how to retry.
-- **Parallelism is explicit.** The extension marks 25 actions as read-only in `details.readOnly`. Mutating actions should be run serially.
+- **Parallelism is explicit.** The extension marks 28 actions as read-only in `details.readOnly`. Mutating actions should be run serially.
 - **Real input events.** Typing uses CDP input and the native value setter so controlled React inputs receive the update; it does not rely on synthetic `dispatchEvent` calls.
 
 ## Cross-origin iframes

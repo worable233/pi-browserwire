@@ -40,6 +40,29 @@
   defaults render untouched.
 
 ### Fixed
+- **Annotations never reached the composer on the default session.** The bridge
+  watched `~/.pi/bw/annotations.json` while the CLI writes to
+  `~/.pi/bw/sessions/<name>/annotations.json`. The bridge now resolves the same
+  session name the CLI does (`--session`, then `BW_SESSION`, then `default`) and
+  watches that directory.
+- `bw doctor` crashed with `CHROME_CANDIDATES is not defined`, left over from the
+  browser-table refactor. It now reports the resolved browser.
+- `run` was a silent no-op through the tool: the child process gets `/dev/null`
+  on stdin, so the script was always empty. It now accepts `--script=<text>` or
+  the first positional argument, falling back to stdin, and errors instead of
+  running nothing.
+- **Stale pids could kill an unrelated process.** `close` and idle reaping sent
+  signals to whatever the recorded pid happened to be, and a recycled pid could
+  belong to any process on the machine. Signals are now sent only after the
+  process command line is confirmed to match (`__daemon`, or the session profile
+  path for the browser).
+- `state.json` was written with a truncate-then-write, so a concurrent reader
+  could observe a half-written file and reset state (losing the browser pid, the
+  viewport, and the viewport replay). Writes now go to a temp file and rename.
+- Recursive `fs.watch` is unsupported on Linux, so the annotation bridge was
+  silently inert there. It watches the session directory directly instead.
+- Read-only set was missing `screenshot`, `outline`, and `ann-shot`, so those were
+  reported as mutating and forced into serial execution.
 - **Host restart when pi runs inside Electron.** The extension spawns its own
   process to run the CLI, and `process.execPath` is the *host application binary*
   when pi is embedded in an Electron main process, not a node binary. Spawning it

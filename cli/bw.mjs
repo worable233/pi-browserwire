@@ -11,8 +11,8 @@
  *   3) 批量 runner    → `bw run` 从 stdin 顺序执行，减少往返
  */
 
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, unlinkSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -846,7 +846,35 @@ function readState() {
 }
 function writeState(patch) {
 	ensureDirs();
-	writeFileSync(STATE_FILE, JSON.stringify({ ...readState(), ...patch }, null, 0));
+	const next = JSON.stringify({ ...readState(), ...patch }, null, 0);
+	// 先写临时文件再 rename：并发命令与读取方永远不会看到半截 JSON
+	const tmp = `${STATE_FILE}.${process.pid}.tmp`;
+	writeFileSync(tmp, next);
+	renameSync(tmp, STATE_FILE);
+}
+
+/**
+ * 校验 pid 的 command line 是否含标记。
+ * state.json 里的 pid 可能已被系统复用给别的进程（包括宿主），盲杀会误伤，所以先核对。
+ */
+function pidMatches(pid, marker) {
+	if (!pid || process.platform === "win32") return false;
+	try {
+		return execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" }).includes(marker);
+	} catch {
+		return false;
+	}
+}
+
+/** 仅当 pid 确实是目标进程时才发信号；非 win32 外的平台没有 ps，一律不动手 */
+function killVerified(pid, marker) {
+	if (!pidMatches(pid, marker)) return false;
+	try {
+		process.kill(pid);
+		return true;
+	} catch {
+		return false;
+	}
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1053,11 +1081,7 @@ async function reapIfIdle() {
 		await b.send("Browser.close").catch(() => {});
 		b.close();
 	} catch {}
-	if (st.daemonPid) {
-		try {
-			process.kill(st.daemonPid);
-		} catch {}
-	}
+	killVerified(st.daemonPid, "__daemon");
 	writeState({ port: null, pid: null, daemonPort: null, daemonPid: null, activeTargetId: null, viewport: null });
 	console.error("bw: 浏览器 idle 超时，已回收");
 	return true;
@@ -3190,11 +3214,7 @@ async function cmdStatus() {
 
 async function cmdClose() {
 	const st = readState();
-	if (st.daemonPid) {
-		try {
-			process.kill(st.daemonPid);
-		} catch {}
-	}
+	killVerified(st.daemonPid, "__daemon");
 	if (await portAlive(st.port)) {
 		try {
 			const wsUrl = await browserWsUrl(st.port);
@@ -3202,11 +3222,7 @@ async function cmdClose() {
 			await b.send("Browser.close").catch(() => {});
 			b.close();
 		} catch {}
-		if (st.pid) {
-			try {
-				process.kill(st.pid);
-			} catch {}
-		}
+		killVerified(st.pid, PROFILE_DIR);
 	}
 	writeState({ port: null, pid: null, daemonPort: null, daemonPid: null, activeTargetId: null });
 	console.log("ok closed");
@@ -3214,12 +3230,14 @@ async function cmdClose() {
 
 async function cmdDoctor() {
 	const st = readState();
-	const chrome = CHROME_CANDIDATES.find((p) => existsSync(p));
-	console.log(`chrome      ${chrome ?? "NOT FOUND"}`);
-	console.log(`browser     ${(await portAlive(st.port)) ? `up :${st.port}` : "down"}`);
+	const picked = resolveBrowser();
+	console.log(`browser     ${picked ? `${picked.id} (${picked.path})` : "NOT FOUND"}`);
+	console.log(`instance    ${(await portAlive(st.port)) ? `up :${st.port}` : "down"}`);
 	console.log(`daemon      ${(await daemonHealth(st.daemonPort)) ? `up :${st.daemonPort}` : "down"}`);
+	console.log(`session     ${SESSION_NAME}`);
 	console.log(`profile     ${PROFILE_DIR}${existsSync(PROFILE_DIR) ? "" : " (not created)"}`);
 	console.log(`shots       ${SHOT_DIR}`);
+	console.log(`hotkey      ${readSettings().hotkey}`);
 	console.log(`node        ${process.version}`);
 }
 
@@ -3599,8 +3617,15 @@ async function dispatch(cmd, argv) {
 			return cmdStorage(rest[0] ?? "local", rest[1]);
 		case "dialog":
 			return cmdDialog(rest[0] ?? "accept", rest[1]);
-		case "run":
-			return cmdRun(await readStdin());
+		case "run": {
+			// 工具调用拿不到 stdin（spawn 时 fd0 指向 /dev/null），所以脚本也接受
+			// --script=<text> 或第一个位置参数；都没有才回退读 stdin。
+			const inline = flags.script ?? flags.stdin ?? rest[0];
+			if (inline !== undefined && String(inline).length) return cmdRun(String(inline));
+			const piped = await readStdin();
+			if (!piped.trim()) throw new Error('run: 需要脚本（--script="open x\\nclick y" 或 stdin）');
+			return cmdRun(piped);
+		}
 		case "status":
 			return cmdStatus();
 		case "close":

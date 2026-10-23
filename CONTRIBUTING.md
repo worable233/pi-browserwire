@@ -46,7 +46,7 @@ const cases = [...cli.matchAll(/^\t\tcase "([a-z-]+)":/gm)]
   .map((m) => m[1])
   .filter((a) => !["help", "--help", "-h"].includes(a));
 const declared = new Set(
-  [...ext.match(/const ACTIONS = \[([\s\S]*?)\];/)[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]),
+  [...ext.match(/const ACTIONS = \[([\s\S]*?)\] as const;/)[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]),
 );
 const missing = cases.filter((c) => !declared.has(c));
 if (missing.length) {
