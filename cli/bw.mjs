@@ -186,7 +186,7 @@ const MARK_STYLE = {
 /* ==================================================================== */
 
 /** 页面注入代码的版本：改 __bwInit/__bwAnnotator/__bwHotkeys/__bwPicker 时必须 +1 */
-const RUNTIME_V = 3;
+const RUNTIME_V = 4;
 
 function __bwInit(style) {
 	if (window.__bw) {
@@ -518,7 +518,7 @@ function __bwAnnotator() {
 			font: "14px/1.5 " + S.font,
 			color: ink(),
 			boxSizing: "border-box",
-			padding: "8px 8px 6px 12px",
+			padding: "7px 8px 7px 12px",
 		});
 
 		// 图片缩略图区
@@ -567,7 +567,13 @@ function __bwAnnotator() {
 		renderThumbs();
 
 		const row = document.createElement("div");
-		Object.assign(row.style, { display: "flex", alignItems: "flex-end", gap: "8px" });
+		// 垂直居中：底部对齐会让文字相对整块 pill 偏下
+		Object.assign(row.style, {
+			display: "flex",
+			alignItems: "center",
+			gap: "8px",
+			minHeight: "36px",
+		});
 
 		// 左侧滑杆图标
 		const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -575,7 +581,6 @@ function __bwAnnotator() {
 		icon.setAttribute("width", "17");
 		icon.setAttribute("height", "17");
 		icon.style.flexShrink = "0";
-		icon.style.marginBottom = "8px";
 		const stroke = inkDim();
 		icon.innerHTML =
 			'<line x1="4" y1="7" x2="20" y2="7" stroke="' + stroke + '" stroke-width="2" stroke-linecap="round"/>' +
@@ -593,13 +598,13 @@ function __bwAnnotator() {
 		Object.assign(editor.style, {
 			flex: "1",
 			minWidth: "0",
-			minHeight: "24px",
+			minHeight: "21px",
 			maxHeight: "132px",
 			overflowY: "auto",
 			outline: "none",
-			font: "14px/1.5 " + S.font,
+			font: "14px/21px " + S.font,
 			color: ink(),
-			padding: "5px 0",
+			padding: "0",
 			wordBreak: "break-word",
 		});
 
@@ -628,7 +633,7 @@ function __bwAnnotator() {
 		Object.assign(ph.style, {
 			position: "absolute",
 			left: "0",
-			top: "5px",
+			top: "0",
 			pointerEvents: "none",
 			color: inkDim(),
 			font: "14px/1.5 " + S.font,

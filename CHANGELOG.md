@@ -46,6 +46,12 @@
   `BW_SHOT_TTL_MS=0` disables pruning.
 
 ### Fixed
+- **The panel text was not vertically centred.** Three offsets stacked: the panel
+  had asymmetric padding (8 top / 6 bottom), the row aligned its children to the
+  bottom, and the editor added its own padding again. The row is now centred with
+  a fixed height, the editor has no padding and a line box of exactly 21px, and
+  the panel padding is symmetric — the text centre now lands within 0.2px of the
+  panel centre instead of 2.5px below it.
 - **The panel placeholder sat 8px too high**, so "添加评论…" floated above the
   caret instead of sitting on the text line. The placeholder was absolutely
   positioned against the panel, which added the panel's own padding on top of the
