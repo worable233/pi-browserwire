@@ -164,6 +164,8 @@ BW_SESSION=task-b bw open localhost:3001
 
 文件锁可避免多个调用同时启动同一会话时重复打开 Chrome。空闲浏览器会在两小时后回收；设置 `BW_IDLE_MS` 可调整超时时间。
 
+截图默认保留 7 天，过期且未被任何标注引用的文件会被清理（每条命令最多检查一次）。设置 `BW_SHOT_TTL_MS` 可调整保留时长，`BW_SHOT_TTL_MS=0` 关闭清理；被 `annotations.json` 引用的截图永远不会删除。
+
 | 命令 | 用途 |
 | --- | --- |
 | `bw hotkey` | 查看标注快捷键（默认 `shift+a`） |

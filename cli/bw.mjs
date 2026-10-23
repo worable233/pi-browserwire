@@ -12,7 +12,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -864,6 +864,48 @@ function pidMatches(pid, marker) {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * 截图清理：删除超过 TTL 且未被任何批注引用的截图。
+ * 被 annotations.json 里 shot 字段引用的文件永远保留，否则批注里的图会变成断链。
+ * 每次命令最多检查一次（间隔 1 小时），避免给每条命令加目录遍历开销。
+ */
+const SHOT_TTL_MS = Number(process.env.BW_SHOT_TTL_MS ?? 7 * 24 * 60 * 60 * 1000);
+const PRUNE_EVERY_MS = 60 * 60 * 1000;
+
+function pruneShots(force = false) {
+	if (!(SHOT_TTL_MS > 0)) return 0;
+	const now = Date.now();
+	const st = readState();
+	if (!force && st.lastPruneAt && now - st.lastPruneAt < PRUNE_EVERY_MS) return 0;
+
+	let names = [];
+	try {
+		names = readdirSync(SHOT_DIR);
+	} catch {
+		return 0;
+	}
+
+	const keep = new Set();
+	try {
+		const d = JSON.parse(readFileSync(ANN_FILE, "utf8"));
+		for (const a of d.items ?? []) if (a.shot) keep.add(a.shot);
+	} catch {}
+
+	let removed = 0;
+	for (const name of names) {
+		const file = join(SHOT_DIR, name);
+		if (keep.has(file)) continue;
+		try {
+			const s = statSync(file);
+			if (!s.isFile() || now - s.mtimeMs < SHOT_TTL_MS) continue;
+			unlinkSync(file);
+			removed++;
+		} catch {}
+	}
+	writeState({ lastPruneAt: now });
+	return removed;
 }
 
 /** 仅当 pid 确实是目标进程时才发信号；非 win32 外的平台没有 ps，一律不动手 */
@@ -3663,6 +3705,8 @@ if (first === "__daemon") {
 	await runDaemon(argv[0], Number(argv[1]));
 } else {
 	try {
+		// 顺带清理过期截图（内部按小时节流）
+		pruneShots();
 		if (!["close", "status", "doctor", "__daemon", undefined, "help", "--help", "-h"].includes(first)) {
 			if (await reapIfIdle()) {
 				console.error("bw: 上次会话已回收，本次命令重新启动浏览器");

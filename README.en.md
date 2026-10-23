@@ -164,6 +164,8 @@ BW_SESSION=task-b bw open localhost:3001
 
 A file lock prevents duplicate Chrome launches when several calls start a session at once. Idle browsers are reaped after two hours; set `BW_IDLE_MS` to change the timeout.
 
+Screenshots are kept for seven days. Expired files that no annotation references are pruned at most once per command. Set `BW_SHOT_TTL_MS` to change the retention window, or `BW_SHOT_TTL_MS=0` to disable pruning; screenshots referenced by `annotations.json` are never deleted.
+
 | Command | Purpose |
 | --- | --- |
 | `bw hotkey` | Show the annotation hotkey (default `shift+a`) |

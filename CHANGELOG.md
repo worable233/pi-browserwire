@@ -39,6 +39,12 @@
   assignments. Slot substitution only happens for actually-loaded plugins, so the
   defaults render untouched.
 
+### Added
+- Screenshot retention: files older than `BW_SHOT_TTL_MS` (default 7 days) are
+  pruned, at most once per hour per session. Screenshots referenced by
+  `annotations.json` are never deleted, so annotation images cannot break.
+  `BW_SHOT_TTL_MS=0` disables pruning.
+
 ### Fixed
 - **Annotations never reached the composer on the default session.** The bridge
   watched `~/.pi/bw/annotations.json` while the CLI writes to
