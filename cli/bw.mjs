@@ -1369,6 +1369,7 @@ async function rectOf(cdp, selector) {
 			el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
 			const r = el.getBoundingClientRect();
 			return { x: r.x, y: r.y, w: r.width, h: r.height,
+				sx: window.scrollX || 0, sy: window.scrollY || 0,
 				cx: r.x + r.width / 2, cy: r.y + r.height / 2, visible: window.__bw.visible(el) };
 		})()`,
 	);
@@ -1613,10 +1614,10 @@ async function runDaemon(wsUrl, port) {
 			if (!attached.has(targetId)) continue;
 			browserCdp
 				.send("Runtime.evaluate", { expression: ANN_OUTBOX_EXPR, returnByValue: true }, sessionId)
-				.then((r) => {
+				.then(async (r) => {
 					const v = r?.result?.value;
 					if (!v || !Array.isArray(v.o) || !v.o.length) return;
-					const saved = applyAnnEvents({ url: v.url, title: v.title, tabIndex: undefined }, v.o);
+					const saved = await applyAnnEvents({ url: v.url, title: v.title, tabIndex: undefined }, v.o);
 					for (const item of saved) {
 						browserCdp
 							.send("Runtime.evaluate", { expression: ANN_SYNC_EXPR(item), returnByValue: true }, sessionId)
@@ -2406,31 +2407,65 @@ async function cmdShot(outPath, opts) {
 			});
 			await waitLayout(cdp);
 		}
+
+		// 后台标签页的合成层会停在旧帧，先拉到前台
+		await cdp.send("Page.bringToFront").catch(() => {});
+		// 等两帧，确保滚动/动画后的状态已经提交
+		await evaluate(
+			cdp,
+			"new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))",
+		).catch(() => {});
+
+		const m = await evaluate(
+			cdp,
+			`({
+				dpr: window.devicePixelRatio || 1,
+				sx: window.scrollX || 0,
+				sy: window.scrollY || 0,
+				vw: window.innerWidth || document.documentElement.clientWidth,
+				vh: window.innerHeight,
+				docW: Math.max(document.body.scrollWidth, document.documentElement.scrollWidth),
+				docH: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+			})`,
+		);
+
+		// clip 一律用「页面坐标」。配合 captureBeyondViewport 才能抓到滚动后的真实内容：
+		// fromSurface 的纯视口截取会返回滚动前/未提交的旧合成层（截出来是空白或只有底色）。
 		let clip;
 		if (opts.selector) {
 			const r = await rectOf(cdp, opts.selector);
 			if (!r) throw new Error(`找不到元素: ${opts.selector}`);
 			const pad = 12;
-			clip = { x: Math.max(0, r.x - pad), y: Math.max(0, r.y - pad), width: r.w + pad * 2, height: r.h + pad * 2, scale: 1 };
+			clip = {
+				x: Math.max(0, r.x + r.sx - pad),
+				y: Math.max(0, r.y + r.sy - pad),
+				width: r.w + pad * 2,
+				height: r.h + pad * 2,
+				scale: 1,
+			};
+		} else if (opts.full) {
+			clip = { x: 0, y: 0, width: m.docW, height: Math.min(m.docH, MAX_FULL_H), scale: 1 };
+		} else if (opts.viewport) {
+			clip = { x: m.sx, y: m.sy, width: m.vw, height: m.vh, scale: 1 };
 		} else {
-			const m = await evaluate(
-				cdp,
-				`({ w: window.innerWidth || document.documentElement.clientWidth,
-				    h: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) })`,
-			);
-			const vh = await evaluate(cdp, "window.innerHeight");
-			const full = opts.full || (!opts.viewport && m.h <= MAX_FULL_H);
-			clip = { x: 0, y: 0, width: m.w, height: full ? m.h : Math.min(m.h, vh), scale: 1 };
+			// 默认：能整页就整页，太长则截当前视口
+			clip =
+				m.docH <= MAX_FULL_H
+					? { x: 0, y: 0, width: m.docW, height: m.docH, scale: 1 }
+					: { x: m.sx, y: m.sy, width: m.vw, height: m.vh, scale: 1 };
 		}
+
 		const format = opts.png ? "png" : "jpeg";
-		const params = { format, clip, captureBeyondViewport: !!opts.full || clip.height > 900 };
+		const params = { format, clip, captureBeyondViewport: true };
 		if (!opts.png) params.quality = 80;
 		const res = await cdp.send("Page.captureScreenshot", params);
+
 		ensureDirs();
 		const ext = opts.png ? "png" : "jpg";
 		const file = outPath ?? join(SHOT_DIR, `shot-${Date.now()}.${ext}`);
 		writeFileSync(file, Buffer.from(res.data, "base64"));
-		console.log(`${file} ${Math.round(clip.width)}x${Math.round(clip.height)}`);
+		// 输出真实像素尺寸（Retina 上 clip * dpr），避免和实际文件尺寸对不上
+		console.log(`${file} ${Math.round(clip.width * m.dpr)}x${Math.round(clip.height * m.dpr)}`);
 	});
 }
 
@@ -2538,15 +2573,19 @@ function readAnnotations() {
 }
 function writeAnnotations(data) {
 	ensureDirs();
-	writeFileSync(ANN_FILE, JSON.stringify(data, null, 2));
+	// 与 state.json 同理：daemon 心跳和 CLI 可能同时写，截断式写入会被读到半截 JSON，
+	// 而 readAnnotations 容错返回空数据，下一笔写入就会把全部批注清空。
+	const tmp = `${ANN_FILE}.${process.pid}.tmp`;
+	writeFileSync(tmp, JSON.stringify(data, null, 2));
+	renameSync(tmp, ANN_FILE);
 }
 
 /**
  * 保存/更新一条批注。pageKey 用来区分「哪个浏览器窗口的哪个标签页」，
  * 这样 agent 能还原归属。id 稳定，编辑时不新增。
  */
-function upsertAnnotation(patch) {
-	const data = readAnnotations();
+/** 纯函数版本的 upsert：只改传入的数据对象，不做 IO。 */
+function upsertInto(data, patch) {
 	const idx = patch.id ? data.items.findIndex((x) => x.id === patch.id) : -1;
 	let item;
 	if (idx >= 0) {
@@ -2564,6 +2603,12 @@ function upsertAnnotation(patch) {
 		};
 		data.items.push(item);
 	}
+	return item;
+}
+
+function upsertAnnotation(patch) {
+	const data = readAnnotations();
+	const item = upsertInto(data, patch);
 	writeAnnotations(data);
 	return item;
 }
@@ -2650,38 +2695,41 @@ async function cmdAnnotate(opts) {
  * 由每次 bw 命令（含 withPage）顺带调用，所以用户保存后下一条命令就会持久化。
  */
 /** 把页面 outbox 里的事件落盘。返回本次写入的条目，供调用方同步页面徽标。 */
-function applyAnnEvents(pk, events) {
-	const saved = [];
-	for (const ev of events) {
-		if (ev.op === "save") {
-			let id = ev.payload.id ?? undefined;
-			if (!id) {
-				const cur = readAnnotations();
-				const hit = cur.items.find((x) => x.url === pk.url && x.selector === ev.payload.selector);
-				if (hit) id = hit.id;
+async function applyAnnEvents(pk, events) {
+	// daemon 心跳与 CLI 兜底刷新可能同时落盘，必须串行化，否则后写的一方会覆盖先写的
+	const { result } = await withLock("annotations", async () => {
+		const data = readAnnotations();
+		const saved = [];
+		for (const ev of events) {
+			if (ev.op === "save") {
+				let id = ev.payload.id ?? undefined;
+				if (!id) {
+					const hit = data.items.find((x) => x.url === pk.url && x.selector === ev.payload.selector);
+					if (hit) id = hit.id;
+				}
+				const item = upsertInto(data, {
+					id,
+					selector: ev.payload.selector,
+					tag: ev.payload.tag,
+					text: ev.payload.text,
+					note: ev.payload.note,
+					noteHtml: ev.payload.noteHtml,
+					images: ev.payload.images,
+					url: pk.url,
+					title: pk.title,
+					tabIndex: pk.tabIndex,
+				});
+				saved.push(item);
+				console.error(`#${item.n} ${item.selector} — ${item.note}`);
+			} else if (ev.op === "delete") {
+				data.items = data.items.filter((x) => x.id !== ev.payload.id);
+				console.error(`deleted ${ev.payload.id}`);
 			}
-			const item = upsertAnnotation({
-				id,
-				selector: ev.payload.selector,
-				tag: ev.payload.tag,
-				text: ev.payload.text,
-				note: ev.payload.note,
-				noteHtml: ev.payload.noteHtml,
-				images: ev.payload.images,
-				url: pk.url,
-				title: pk.title,
-				tabIndex: pk.tabIndex,
-			});
-			saved.push(item);
-			console.error(`#${item.n} ${item.selector} — ${item.note}`);
-		} else if (ev.op === "delete") {
-			const d = readAnnotations();
-			d.items = d.items.filter((x) => x.id !== ev.payload.id);
-			writeAnnotations(d);
-			console.error(`deleted ${ev.payload.id}`);
 		}
-	}
-	return saved;
+		writeAnnotations(data);
+		return saved;
+	});
+	return result;
 }
 
 /** 页面内徽标同步（把落盘后的 id / 序号 / 富文本写回内存中的 marks）。 */
@@ -2731,7 +2779,7 @@ async function flushAnnotationOutbox() {
 		const out = await evaluate(cdp, "(window.__bwAnnOut && window.__bwAnnOut.splice(0)) || []");
 		if (!out?.length) return;
 		const pk = await pageKeyOf(st.port, target);
-		const saved = applyAnnEvents(pk, out);
+		const saved = await applyAnnEvents(pk, out);
 		for (const item of saved) await evaluate(cdp, ANN_SYNC_EXPR(item));
 	} catch {
 		// 页面可能已导航，忽略

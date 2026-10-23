@@ -121,6 +121,13 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 				if (f && !String(f).endsWith("annotations.json")) return;
 				schedule(ctx);
 			});
+			// fs.watch 在目录被删/移动时会把 error 事件抛成未捕获异常，直接打穿宿主主进程
+			watcher.on("error", () => {
+				try {
+					watcher?.close();
+				} catch {}
+				watcher = null;
+			});
 			schedule(ctx);
 		} catch {}
 	});
@@ -182,7 +189,8 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 			try {
 				const buf = readFileSync(a.shot);
 				if (buf.length > MAX_IMAGE_BYTES) continue;
-				images.push({ type: "image", data: buf.toString("base64"), mimeType: "image/jpeg" });
+				const mimeType = a.shot.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+				images.push({ type: "image", data: buf.toString("base64"), mimeType });
 			} catch {}
 		}
 		attached.add(sig);

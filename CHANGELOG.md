@@ -46,6 +46,25 @@
   `BW_SHOT_TTL_MS=0` disables pruning.
 
 ### Fixed
+- **Viewport screenshots returned a stale frame after scrolling.** `shot` used
+  `fromSurface` capture with `captureBeyondViewport: false`, which returns the
+  last *composited* frame — after a scroll that is the pre-scroll surface, so the
+  image showed only the background. Dominated by DOM checks (`elementsFromPoint`,
+  opacity) looking correct. All captures now use `captureBeyondViewport` with a
+  clip in page coordinates, the tab is brought to the front first, and two frames
+  are awaited. Element shots also work for elements outside the viewport now, and
+  the reported size is the real pixel size (`clip * devicePixelRatio`).
+- **`annotations.json` could be lost entirely.** The file was written with a
+  truncate-then-write while two writers exist (daemon heartbeat and the CLI
+  fallback flush). A reader hitting the truncated window got an empty object,
+  and the next write persisted that emptiness. Writes are now temp-file + rename,
+  and every batch update runs under a cross-process lock so concurrent flushes
+  cannot clobber each other.
+- The annotation bridge's `fs.watch` had no `error` handler; a deleted or moved
+  directory would raise an uncaught exception inside the host's main process.
+- PNG screenshots were delivered with `mimeType: image/jpeg`.
+- Tool output accumulation is capped at 512 KB per stream, and the abort listener
+  is detached on completion instead of lingering for the session lifetime.
 - **Saved annotations could sit in the page forever.** Notes went into an in-page
   outbox that only the next `bw` command drained, so annotating while the agent
   was idle waiting for input meant the composer never received anything. The

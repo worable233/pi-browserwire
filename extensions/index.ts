@@ -104,11 +104,15 @@ export function runBw(
 		const child = spawn(process.execPath, [cli, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
 		let out = "";
 		let err = "";
+		const CAP = 512 * 1024;
+		const append = (cur: string, chunk: Buffer) =>
+			cur.length > CAP ? cur : cur + chunk.toString();
 		let done = false;
 		const finish = (r: RunResult) => {
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
+			detachAbort?.();
 			resolve(r);
 		};
 		const timer = setTimeout(() => {
@@ -123,14 +127,15 @@ export function runBw(
 			});
 		}, timeoutMs);
 
-		child.stdout?.on("data", (c) => (out += c.toString()));
-		child.stderr?.on("data", (c) => (err += c.toString()));
+		child.stdout?.on("data", (c) => (out = append(out, c)));
+		child.stderr?.on("data", (c) => (err = append(err, c)));
 		child.on("error", (e) => finish({ ok: false, out: "", err: `spawn failed: ${e.message}`, code: 126 }));
 		child.on("close", (code) =>
 			finish({ ok: code === 0, out: out.trim(), err: err.trim() || undefined, code: code ?? 1 }),
 		);
 
 		// Cancellation from the harness (user stop, sibling failure, session dispose).
+		let detachAbort: (() => void) | null = null;
 		if (opts.signal) {
 			const onAbort = () => {
 				try {
@@ -139,7 +144,10 @@ export function runBw(
 				finish({ ok: false, out: out.trim(), err: "aborted", code: 130 });
 			};
 			if (opts.signal.aborted) onAbort();
-			else opts.signal.addEventListener("abort", onAbort, { once: true });
+			else {
+				opts.signal.addEventListener("abort", onAbort, { once: true });
+				detachAbort = () => opts.signal?.removeEventListener("abort", onAbort);
+			}
 		}
 	});
 }
