@@ -46,6 +46,14 @@
   `BW_SHOT_TTL_MS=0` disables pruning.
 
 ### Fixed
+- **The panel placeholder sat 8px too high**, so "添加评论…" floated above the
+  caret instead of sitting on the text line. The placeholder was absolutely
+  positioned against the panel, which added the panel's own padding on top of the
+  editor's; it now lives in a positioning box the size of the editor.
+- Injected page code was never refreshed in pages that were already open, so a
+  fixed panel still looked broken until the tab was reloaded by hand. The runtime
+  now carries a version: every command re-checks it and rebuilds the annotation
+  layer in place when it is stale.
 - **The hotkey did nothing when focus was inside an iframe.** Pages that embed
   demos or players in cross-origin frames (a component gallery, a video embed)
   never see keydown from the top document — the listener was installed there

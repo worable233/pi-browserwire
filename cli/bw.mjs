@@ -185,6 +185,9 @@ const MARK_STYLE = {
 /* 浏览器侧注入的运行时（真实函数，toString 后注入，避免转义地狱）      */
 /* ==================================================================== */
 
+/** 页面注入代码的版本：改 __bwInit/__bwAnnotator/__bwHotkeys/__bwPicker 时必须 +1 */
+const RUNTIME_V = 3;
+
 function __bwInit(style) {
 	if (window.__bw) {
 		window.__bw.style = style;
@@ -610,12 +613,21 @@ function __bwAnnotator() {
 				editor.removeAttribute("data-placeholder");
 			}
 		};
-		// placeholder 用伪元素需要样式表，改为绝对定位覆盖层
+		// placeholder 用伪元素需要样式表，改为绝对定位覆盖层。
+		// 必须挂在与编辑器同尺寸的定位容器里：挂在 panel 上会把 panel 的 padding
+		// 也算进偏移，字会比光标高出一截。
+		const field = document.createElement("div");
+		Object.assign(field.style, {
+			position: "relative",
+			display: "flex",
+			flex: "1",
+			minWidth: "0",
+		});
 		const ph = document.createElement("span");
 		ph.textContent = existing ? "编辑批注…" : "添加评论…";
 		Object.assign(ph.style, {
 			position: "absolute",
-			left: "37px",
+			left: "0",
 			top: "5px",
 			pointerEvents: "none",
 			color: inkDim(),
@@ -720,7 +732,9 @@ function __bwAnnotator() {
 			}
 		});
 
-		row.append(icon, editor, submit);
+		field.appendChild(editor);
+		field.appendChild(ph);
+		row.append(icon, field, submit);
 		panel.append(thumbs, row);
 
 		// 编辑模式：删除按钮
@@ -748,7 +762,6 @@ function __bwAnnotator() {
 		}
 
 		document.documentElement.appendChild(panel);
-		panel.appendChild(ph);
 
 		// 定位：元素下方，空间不足翻上方，水平夹视口
 		const pr = panel.getBoundingClientRect();
@@ -889,8 +902,27 @@ function __bwPicker() {
 	return "injected";
 }
 
-const injectRuntime = (cdp) =>
-	evaluate(cdp, `(${__bwInit.toString()})(${JSON.stringify(MARK_STYLE)})`);
+/**
+ * 页面运行时引导表达式：版本一致时早退，几乎零成本。
+ * 版本不一致（CLI 升级、或页面里跑着旧逻辑）时清掉旧批注层并按新版重建，
+ * 这样不必让用户手动刷新页面。
+ */
+function runtimeExpr() {
+	const hotkey = readSettings().hotkey || "shift+a";
+	return `(() => {
+		if (window.__bwRuntimeV === ${RUNTIME_V} && window.__bwAnn) return "ok";
+		if (!window.__bw) (${__bwInit.toString()})(${JSON.stringify(MARK_STYLE)});
+		document.querySelectorAll("[data-bw-veil],[data-bw-panel],[data-bw-badge]").forEach((n) => n.remove());
+		window.__bwAnn = null;
+		window.__bwAnnActive = false;
+		(${__bwAnnotator.toString()})();
+		(${__bwHotkeys.toString()})(${JSON.stringify(hotkey)});
+		window.__bwRuntimeV = ${RUNTIME_V};
+		return "ok";
+	})()`;
+}
+
+const injectRuntime = (cdp) => evaluate(cdp, runtimeExpr());
 
 /* ==================================================================== */
 /* state / util                                                          */
@@ -1606,18 +1638,7 @@ async function runDaemon(wsUrl, port) {
 		try {
 			await browserCdp.send(
 				"Runtime.evaluate",
-				{
-					expression: `(() => {
-						if (!window.__bw) (${__bwInit.toString()})(${JSON.stringify(MARK_STYLE)});
-						if (!window.__bwAnn) (${__bwAnnotator.toString()})();
-						// 无条件重装：函数内部会摘掉旧监听，这样既能让配置变更生效，
-						// 也能在 CLI 升级后替换掉页面里的旧版逻辑（含 message 通道）。
-						(${__bwHotkeys.toString()})(${JSON.stringify(readSettings().hotkey || "shift+a")});
-						return true;
-					})()`,
-					returnByValue: true,
-					awaitPromise: false,
-				},
+				{ expression: runtimeExpr(), returnByValue: true, awaitPromise: false },
 				sessionId,
 			);
 		} catch {}
@@ -1880,6 +1901,8 @@ async function withPage(fn) {
 	await ensureDaemon();
 	const { cdp, target } = await connect(port);
 	try {
+		// 每个命令都确保页面里是当前版本的注入代码（版本一致时是一次早退）
+		await injectRuntime(cdp).catch(() => {});
 		return await fn(cdp, port, target);
 	} finally {
 		cdp.close();
@@ -2728,8 +2751,6 @@ async function cmdAnnotate(opts) {
 	const { cdp, target } = await connect(port);
 	try {
 		await injectRuntime(cdp);
-		await evaluate(cdp, `(${__bwHotkeys.toString()})(${JSON.stringify(readSettings().hotkey)})`);
-		await evaluate(cdp, `(${__bwAnnotator.toString()})()`);
 
 		const pk = await pageKeyOf(port, target);
 		const data = readAnnotations();
