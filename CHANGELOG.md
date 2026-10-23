@@ -58,6 +58,12 @@
   screen. Long property lists otherwise cover the element you are tweaking.
 
 ### Fixed
+- **The submit arrow did nothing when annotation mode was started with the hotkey.**
+  The page-side outbox hooks (`__bwAnnSave` / `__bwAnnDelete`) were only created by
+  `bw annotate`, so the hotkey path — and any page after a reload — threw
+  `window.__bwAnnSave is not a function` on submit and left the panel open with
+  nothing saved. The outbox is now part of the annotation layer itself, so every
+  way of entering annotation mode works.
 - **The selection highlight vanished as soon as the composer opened**, leaving no
   way to tell which element the note was attached to. The box was deliberately
   hidden when selection froze; it now stays pinned to the target, survives mouse

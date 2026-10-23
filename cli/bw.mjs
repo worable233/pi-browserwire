@@ -186,7 +186,7 @@ const MARK_STYLE = {
 /* ==================================================================== */
 
 /** 页面注入代码的版本：改 __bwInit/__bwAnnotator/__bwHotkeys/__bwPicker 时必须 +1 */
-const RUNTIME_V = 9;
+const RUNTIME_V = 10;
 
 function __bwInit(style) {
 	if (window.__bw) {
@@ -1199,6 +1199,16 @@ function __bwAnnotator() {
 		setActive(true);
 		openPanel(el, null);
 	};
+
+	// 出站队列：用热键进入标注模式时不会经过 `bw annotate`，这两个钩子必须在
+	// 批注层里自带，否则点提交会抛 __bwAnnSave is not a function，表现为「按了没反应」。
+	window.__bwAnnOut = window.__bwAnnOut || [];
+	if (typeof window.__bwAnnSave !== "function") {
+		window.__bwAnnSave = (payload) => window.__bwAnnOut.push({ op: "save", payload });
+	}
+	if (typeof window.__bwAnnDelete !== "function") {
+		window.__bwAnnDelete = (id) => window.__bwAnnOut.push({ op: "delete", payload: { id } });
+	}
 
 	window.__bwAnn = { veil, closePanel, openPanel, setActive };
 	return "injected";
@@ -3149,8 +3159,12 @@ async function cmdAnnotate(opts) {
 			cdp,
 			`(() => {
 				window.__bwAnnOut = window.__bwAnnOut || [];
-				window.__bwAnnSave = (payload) => window.__bwAnnOut.push({ op: 'save', payload });
-				window.__bwAnnDelete = (id) => window.__bwAnnOut.push({ op: 'delete', payload: { id } });
+				if (typeof window.__bwAnnSave !== 'function') {
+					window.__bwAnnSave = (payload) => window.__bwAnnOut.push({ op: 'save', payload });
+				}
+				if (typeof window.__bwAnnDelete !== 'function') {
+					window.__bwAnnDelete = (id) => window.__bwAnnOut.push({ op: 'delete', payload: { id } });
+				}
 				return true;
 			})()`,
 		);
