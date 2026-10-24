@@ -34,8 +34,18 @@ python3 percho/patch-percho.py     # 生成 /tmp/app-patched.asar（不落盘到
 
 替换时会把原文件备份到 `Contents/Resources/app.asar.bak-<时间戳>`。
 
-做完之后去 **设置 → UI 插件** 打开总开关并启用「浏览器批注条」——这是信任门，
-agent 不能代劳。
+做完之后去 **设置 → 外观 → UI 插件**（不是「扩展」——那是 pi 扩展，另一套系统）
+打开总开关并启用「浏览器批注条」——这是信任门，agent 不能代劳。
+
+插件目录必须是**真实目录**，不能用 symlink：
+
+```bash
+cp -R percho/composer-card ~/.percho/ui-plugins/bw-annotations
+```
+
+宿主扫描用的是 `readdir(..., { withFileTypes: true })` + `if (!entry.isDirectory()) continue`，
+symlink 的 `isDirectory()` 是 `false`，整个插件会被静默跳过（日志里只有一条
+`scanAll` 什么都没有）。
 
 ## 风险
 
@@ -44,3 +54,12 @@ agent 不能代劳。
 - 补丁版本只针对当前 Percho 的渲染器 bundle（`out/renderer/assets/index-*.js`），
   脚本按内容（`window.PerchoUI`）自动定位，不写死文件名。
 - 卸载：`cp Contents/Resources/app.asar.bak-<时间戳> Contents/Resources/app.asar`。
+
+## 已知坑
+
+- `apply.sh` 等退出用的是 `pgrep -fx /Applications/Percho.app/Contents/MacOS/Percho`
+  精确匹配。早先用 `pgrep -f "…/MacOS/Percho"` 会连 `Percho Helper` 一起命中，
+  永远等不到「已退出」，守护进程会一直挂着不动。
+- 补丁只在**下一次启动**生效：换了 `app.asar` 而 Percho 还在跑时，主进程内存里仍是
+  旧代码，设置页日志会明说
+  `manifest contribution 忽略未知 region: {"id":"bar","region":"composer.top"…}`。

@@ -17,6 +17,7 @@
     "bw": "./cli/bw.mjs"
   },
   "files": [
+    "index.ts",
     "cli/",
     "extensions/",
     "skills/",
@@ -26,7 +27,7 @@
   ],
   "pi": {
     "extensions": [
-      "extensions/index.ts"
+      "./index.ts"
     ],
     "skills": [
       "skills/"

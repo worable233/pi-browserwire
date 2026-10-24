@@ -18,7 +18,8 @@ if [ "${1:-}" = "--detach" ]; then
   exit 0
 fi
 
-while pgrep -f "Percho.app/Contents/MacOS/Percho" >/dev/null 2>&1; do sleep 2; done
+# 用 -fx 精确匹配：-f 会把 "Percho Helper" 也算进去，导致永远等不到退出
+while pgrep -fx "/Applications/Percho.app/Contents/MacOS/Percho" >/dev/null 2>&1; do sleep 2; done
 
 BK="$RES/app.asar.bak-$(date +%Y%m%d%H%M%S)"
 cp "$RES/app.asar" "$BK"
