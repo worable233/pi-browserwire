@@ -2,6 +2,17 @@
 
 ## 0.2.0
 
+### Annotation lifecycle: one round, one send
+
+An annotation is message material, not a permanent marker:
+
+- the card above the composer (optional patch) lists only **pending** annotations
+  and empties itself as the message takes them;
+- on the page the badge of a sent annotation stays but dims to 35% — clicking it
+  opens the editor and makes it pending again, which is the "send this again" path;
+- `bw ann` / `bw ann-export` show pending only by default, so the agent never
+  re-litigates annotations it has already handled; `--all` shows history.
+
 ### Optional: annotation card above the composer
 
 Percho has no mount point above the composer and no channel that can carry

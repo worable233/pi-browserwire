@@ -3072,6 +3072,17 @@ async function cmdClear() {
 const ANN_FILE = join(STATE_DIR, "annotations.json");
 const SENT_FILE = join(STATE_DIR, "sent.json");
 
+/** 已随消息发送过的批注（pi 扩展写：id → updatedAt）。改过 updatedAt 就再次算待发送。 */
+function readSent() {
+	try {
+		const d = JSON.parse(readFileSync(SENT_FILE, "utf8"));
+		return d && typeof d === "object" ? d : {};
+	} catch {
+		return {};
+	}
+}
+const isSent = (item, sent) => !!item?.id && (sent ?? readSent())[item.id] === item.updatedAt;
+
 function readAnnotations() {
 	try {
 		const d = JSON.parse(readFileSync(ANN_FILE, "utf8"));
@@ -3149,6 +3160,7 @@ async function cmdAnnotate(opts) {
 
 		const pk = await pageKeyOf(port, target);
 		const data = readAnnotations();
+		const sent = readSent();
 		const mine = data.items.filter((a) => a.url === pk.url);
 
 		// 恢复本页已有批注（含富文本与图片）
@@ -3173,6 +3185,8 @@ async function cmdAnnotate(opts) {
 					bw.marks.push({ id: ${JSON.stringify(a.id)}, n: ${a.n}, selector: ${JSON.stringify(a.selector)},
 						note: ${JSON.stringify(a.note)}, noteHtml: ${JSON.stringify(a.noteHtml ?? "")},
 						images: ${JSON.stringify(a.images ?? [])}, el, badge: bw.badge(${a.n}, el) });
+					const b = bw.marks[bw.marks.length - 1].badge;
+					if (b && ${isSent(a, sent) ? "true" : "false"}) { b.style.opacity = ".35"; b.dataset.sent = "1"; }
 					return true;
 				})()`,
 			);
@@ -3247,6 +3261,12 @@ async function applyAnnEvents(pk, events) {
 
 /** 页面内徽标同步（把落盘后的 id / 序号 / 富文本写回内存中的 marks）。 */
 const ANN_SYNC_EXPR = (item) => `(() => {
+	const markSent = (badge, on) => {
+		if (!badge) return;
+		badge.style.opacity = on ? ".35" : "";
+		if (on) badge.dataset.sent = "1";
+		else delete badge.dataset.sent;
+	};
 	const bw = window.__bw;
 	const sel = ${JSON.stringify(item.selector)};
 	const el = document.querySelector(sel);
@@ -3261,11 +3281,13 @@ const ANN_SYNC_EXPR = (item) => `(() => {
 	m.changes = ${JSON.stringify(item.changes ?? [])};
 		if (!m.badge || !m.badge.isConnected) m.badge = bw.badge(m.n, el);
 		else m.badge.textContent = String(m.n);
+		markSent(m.badge, ${item.sent ? "true" : "false"});
 	} else {
 		bw.paint(el);
 		bw.marks.push({ id: ${JSON.stringify(item.id)}, n: ${item.n}, selector: sel,
 			note: ${JSON.stringify(item.note)}, noteHtml: ${JSON.stringify(item.noteHtml ?? "")},
 			images: ${JSON.stringify(item.images ?? [])}, el, badge: bw.badge(${item.n}, el) });
+		markSent(bw.marks[bw.marks.length - 1].badge, ${item.sent ? "true" : "false"});
 	}
 	bw.sync();
 	return true;
@@ -3321,14 +3343,18 @@ async function cmdAnnotateDone() {
 	});
 }
 
-async function cmdAnnList() {
+async function cmdAnnList(flags = {}) {
 	const data = readAnnotations();
-	if (!data.items.length) {
-		console.log("(none)");
+	const sent = readSent();
+	const all = data.items;
+	const items0 = flags.all ? all : all.filter((a) => !isSent(a, sent));
+	const hidden = all.length - items0.length;
+	if (!items0.length) {
+		console.log(hidden ? `(none) 另有 ${hidden} 条已发送，用 --all 查看` : "(none)");
 		return;
 	}
 	const byUrl = new Map();
-	for (const a of data.items) {
+	for (const a of items0) {
 		if (!byUrl.has(a.url)) byUrl.set(a.url, []);
 		byUrl.get(a.url).push(a);
 	}
@@ -3339,17 +3365,20 @@ async function cmdAnnList() {
 			console.log(`  #${a.n} ${a.selector} — ${brief(a.note, 80)}${ch}`);
 		}
 	}
+	if (hidden) console.log(`\n(${hidden} 条已发送，用 --all 查看)`);
 }
 
-async function cmdAnnExport() {
+async function cmdAnnExport(flags = {}) {
 	const data = readAnnotations();
-	if (!data.items.length) {
+	const sent = readSent();
+	const items0 = flags.all ? data.items : data.items.filter((a) => !isSent(a, sent));
+	if (!items0.length) {
 		console.log("(none)");
 		return;
 	}
 	// 按页面分组，生成 agent 可直接消费的 markdown
 	const byUrl = new Map();
-	for (const a of data.items) {
+	for (const a of items0) {
 		if (!byUrl.has(a.url)) byUrl.set(a.url, []);
 		byUrl.get(a.url).push(a);
 	}
@@ -4388,8 +4417,8 @@ const HELP = `bw — 浏览器调试 CLI（零依赖）
 批注（用户驱动，跨标签页持久）
   annotate                   进入批注模式：点击元素→输入批注；点徽章可编辑
   annotate-done              退出批注模式（保留徽章）
-  ann                        列出所有批注（按页面分组）
-  ann-export                 导出 markdown（agent 可直接读）
+  ann [--all]                列出待发送批注（--all 含已发送）
+  ann-export [--all]         导出 markdown（agent 可直接读）
   ann-shot                   对当前页所有批注整页截图
   ann-clear                  清空全部批注
 
@@ -4553,9 +4582,9 @@ async function dispatch(cmd, argv) {
 		case "annotate-done":
 			return cmdAnnotateDone();
 		case "ann":
-			return cmdAnnList();
+			return cmdAnnList(flags);
 		case "ann-export":
-			return cmdAnnExport();
+			return cmdAnnExport(flags);
 		case "ann-shot":
 			return cmdAnnShot();
 		case "ann-clear":
