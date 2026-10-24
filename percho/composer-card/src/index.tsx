@@ -17,6 +17,8 @@ interface Ann {
 	n?: number;
 	selector?: string;
 	note?: string;
+	/** 已随某条消息发出（主进程读 sent.json 判断）：发过的从卡片里消失 */
+	sent?: boolean;
 }
 
 interface Bridge {
@@ -39,7 +41,7 @@ function shortSelector(selector?: string): string {
 	return parts.slice(-2).join(" > ");
 }
 
-const sigOf = (list: Ann[]) => list.map((a) => `${a.id}:${a.selector}:${a.note}`).join("|");
+const sigOf = (list: Ann[]) => list.map((a) => `${a.id}:${a.sent ? 1 : 0}:${a.selector}:${a.note}`).join("|");
 
 function PencilIcon({ size = 13, className }: { size?: number; className?: string }) {
 	return (
@@ -85,6 +87,7 @@ export const AnnotationBar = memo(function AnnotationBar() {
 	const [file, setFile] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
 	const sig = useRef("");
+	const box = useRef<HTMLDivElement | null>(null);
 
 	const load = useMemo(
 		() => async () => {
@@ -126,14 +129,30 @@ export const AnnotationBar = memo(function AnnotationBar() {
 		} catch {}
 	};
 
-	if (!items.length) return null;
+	// 点开才展开（悬停展开太容易误触）；点外面或 Esc 收起
+	useEffect(() => {
+		if (!open) return;
+		const onDown = (e: MouseEvent) => {
+			if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setOpen(false);
+		};
+		document.addEventListener("mousedown", onDown, true);
+		document.addEventListener("keydown", onKey, true);
+		return () => {
+			document.removeEventListener("mousedown", onDown, true);
+			document.removeEventListener("keydown", onKey, true);
+		};
+	}, [open]);
+
+	// 只显示还没发出去的：上一条消息已把批注带走，卡片就该空掉
+	const pending = useMemo(() => items.filter((a) => !a.sent), [items]);
+
+	if (!pending.length) return null;
 
 	return (
-		<div
-			className="relative mb-1.5 flex pointer-events-auto"
-			onMouseEnter={() => setOpen(true)}
-			onMouseLeave={() => setOpen(false)}
-		>
+		<div ref={box} className="relative mb-1.5 flex pointer-events-auto">
 			<button
 				type="button"
 				onClick={() => setOpen((v) => !v)}
@@ -141,7 +160,7 @@ export const AnnotationBar = memo(function AnnotationBar() {
 				aria-expanded={open}
 			>
 				<PencilIcon className="shrink-0 text-ink-faint" />
-				<span className="tabular-nums">{items.length} 条批注</span>
+				<span className="tabular-nums">{pending.length} 条批注</span>
 				<ChevronDownIcon open={open} />
 			</button>
 
@@ -150,13 +169,13 @@ export const AnnotationBar = memo(function AnnotationBar() {
 					<div className="flex items-center gap-1.5 px-2 py-1.5 pr-3 text-ui-12 leading-[calc(1_/_0.75)]">
 						<PencilIcon className="shrink-0 text-ink-faint" />
 						<span className="truncate text-ink-faint">页面批注</span>
-						<span className="ml-auto tabular-nums text-ink-faint">{items.length}</span>
+						<span className="ml-auto tabular-nums text-ink-faint">{pending.length}</span>
 					</div>
 
 					<div className="fade-rule mb-1" />
 
 					<div className="thin-scrollbar max-h-64 overflow-y-auto [scrollbar-gutter:stable]">
-						{items.map((a, i) => (
+						{pending.map((a, i) => (
 							<div
 								key={a.id}
 								className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-ui-12 leading-[calc(1_/_0.75)] transition-colors hover:bg-hover motion-reduce:transition-none"

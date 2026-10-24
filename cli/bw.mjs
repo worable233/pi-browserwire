@@ -3056,6 +3056,7 @@ async function cmdClear() {
 /* ---------------- annotations（跨标签页批注） ---------------- */
 
 const ANN_FILE = join(STATE_DIR, "annotations.json");
+const SENT_FILE = join(STATE_DIR, "sent.json");
 
 function readAnnotations() {
 	try {
@@ -3358,6 +3359,10 @@ async function cmdAnnExport() {
 
 async function cmdAnnClear() {
 	writeAnnotations({ items: [], seq: 0 });
+	// 已发送标记跟着清：否则 sent.json 会留下指向不存在批注的陈旧条目
+	try {
+		unlinkSync(SENT_FILE);
+	} catch {}
 	console.log("ok annotations cleared");
 }
 

@@ -29,10 +29,11 @@ Usage:
     ./percho/apply.sh                         # swap it in on next Percho exit
 """
 
-import glob
 import json
 import os
+import re
 import struct
+import subprocess
 import sys
 
 APP = "/Applications/Percho.app/Contents/Resources/app.asar"
@@ -94,18 +95,45 @@ def patch(text, old, new, label, count=1):
     return text.replace(old, new, count)
 
 
+B_START = "/* bw-patch:%s start */"
+B_END = "/* bw-patch:%s end */"
+
+
+def strip_block(text, name):
+    """Remove a previously inserted block so patching is repeatable.
+
+    Every insertion is wrapped in markers; stripping restores the original text
+    exactly, so the anchors below keep working on an already-patched archive.
+    """
+    pattern = re.escape(B_START % name) + r".*?" + re.escape(B_END % name)
+    return re.sub(pattern, "", text, flags=re.S)
+
+
+def wrap(name, body):
+    return B_START % name + body + B_END % name
+
+
 REGION_ANCHOR = '  ComposerFooter: "composer.footer",\n  SettingsPanel: "settings.panel"'
 REGION_PATCH = (
     '  ComposerFooter: "composer.footer",\n'
-    '  /** 输入框正上方：整行卡片（bw 批注条） */\n'
-    '  ComposerTop: "composer.top",\n'
-    '  SettingsPanel: "settings.panel"'
+    + wrap("region-top", '\n  /** 输入框正上方：整行卡片（bw 批注条） */\n  ComposerTop: "composer.top",\n')
+    + '  SettingsPanel: "settings.panel"'
 )
 
 MAIN_IPC = '''
 /* ---- bw 批注桥（本地补丁，见 pi-browserwire/percho/patch-percho.py） ----
-   读/删 ~/.pi/bw/sessions/<name>/annotations.json，取最近改动过的那个会话。 */
+   读/删 ~/.pi/bw/sessions/<name>/annotations.json，取最近改动过的那个会话。
+   同目录的 sent.json 由 pi 扩展写入（id → updatedAt），用来标出「已随消息发出」
+   的批注：卡片只显示还没发的，发完就消失。 */
 const BW_ANN_ROOT = join(homedir(), ".pi", "bw", "sessions");
+function bwAnnSent(file) {
+  try {
+    const d = JSON.parse(readFileSync(file, "utf8"));
+    return d && typeof d === "object" ? d : {};
+  } catch {
+    return {};
+  }
+}
 function bwAnnRead() {
   try {
     const files = [];
@@ -117,8 +145,13 @@ function bwAnnRead() {
     }
     files.sort((a, b) => b.mtime - a.mtime);
     if (!files.length) return { file: null, items: [], seq: 0 };
-    const data = JSON.parse(readFileSync(files[0].file, "utf8"));
-    return { file: files[0].file, items: Array.isArray(data.items) ? data.items : [], seq: data.seq ?? 0 };
+    const file = files[0].file;
+    const data = JSON.parse(readFileSync(file, "utf8"));
+    const sent = bwAnnSent(file.slice(0, file.lastIndexOf("/")) + "/sent.json");
+    const items = (Array.isArray(data.items) ? data.items : []).map((a) =>
+      a && a.id && sent[a.id] === a.updatedAt ? { ...a, sent: true } : a
+    );
+    return { file, items, seq: data.seq ?? 0 };
   } catch {
     return { file: null, items: [], seq: 0 };
   }
@@ -140,6 +173,14 @@ ipcMain.handle("bw:annotations", async (_e, args) => {
       const tmp = `${file}.tmp-${process.pid}`;
       writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
       renameSync(tmp, file);
+      const sentFile = file.slice(0, file.lastIndexOf("/")) + "/sent.json";
+      try {
+        const sent = bwAnnSent(sentFile);
+        if (sent[id] !== void 0) {
+          delete sent[id];
+          writeFileSync(sentFile, JSON.stringify(sent), "utf8");
+        }
+      } catch {}
       return { file, items: data.items, seq: data.seq };
     } catch {
       return current;
@@ -148,21 +189,20 @@ ipcMain.handle("bw:annotations", async (_e, args) => {
   return bwAnnRead();
 });
 '''
-
 PRELOAD_ANCHOR = "  getPathForFile: (file) => electron.webUtils.getPathForFile(file),"
 PRELOAD_PATCH = (
     PRELOAD_ANCHOR
-    + '\n  /** bw 批注桥（本地补丁）：{ action: "list" } / { action: "delete", file, id } */\n'
-    + '  bwAnnotations: (args) => electron.ipcRenderer.invoke("bw:annotations", args),'
+    + wrap("preload-api", '\n  /** bw 批注桥（本地补丁）：{ action: "list" } / { action: "delete", file, id } */\n'
+    + '  bwAnnotations: (args) => electron.ipcRenderer.invoke("bw:annotations", args),')
 )
 
 REGION_CASE_ANCHOR = """    case UI_REGIONS.ComposerFooter:
       return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: list2.map(renderContribution) });"""
 REGION_CASE_PATCH = (
     REGION_CASE_ANCHOR
-    + """
+    + wrap("region-case", """
     case UI_REGIONS.ComposerTop:
-      return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: list2.map(renderContribution) });"""
+      return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: list2.map(renderContribution) });""")
 )
 
 MOUNT_MARK = """      /* @__PURE__ */ jsxRuntimeExports.jsx(RegionHost, { region: UI_REGIONS.ComposerTop }),"""
@@ -170,18 +210,21 @@ MOUNT_MARK = """      /* @__PURE__ */ jsxRuntimeExports.jsx(RegionHost, { region
 PERCHO_UI_ANCHOR = """    useUiPreferencesStore
   }
 };"""
+# 注意：块前不能多一个换行，否则 strip_block 会留下一个空行，重复打补丁时文件逐次变长。
 PERCHO_UI_PATCH = """    useUiPreferencesStore
   }
-};
+};""" + wrap("renderer-api", """
 /* bw 批注桥（本地补丁）：UI 插件只拿 PerchoUI，不透出 window.pi */
 window.PerchoUI.annotations = {
   list: () => window.pi.bwAnnotations({ action: "list" }),
   remove: (file, id) => window.pi.bwAnnotations({ action: "delete", file, id })
-};"""
+};""")
 
 
 def mount_composer_card(src):
     """Insert <RegionHost region=ComposerTop/> just above the composer input box."""
+    if MOUNT_MARK in src:
+        return src  # already mounted (re-patch): the marker line is idempotent
     marker = "onMouseDown: handleComposerMouseDown,"
     if src.count(marker) != 1:
         sys.exit(f"✗ composer anchor is not unique ({src.count(marker)})")
@@ -193,10 +236,13 @@ def mount_composer_card(src):
 
 
 def main():
-    if not os.path.exists(APP):
-        sys.exit(f"✗ {APP} not found")
+    args = sys.argv[1:]
+    src_path = args[0] if args else APP
+    out_path = args[1] if len(args) > 1 else OUT
+    if not os.path.exists(src_path):
+        sys.exit(f"✗ {src_path} not found")
 
-    header, data, _ = read_asar(APP)
+    header, data, _ = read_asar(src_path)
     blobs = {}
     for path, node in walk(header):
         if node.get("unpacked"):
@@ -216,20 +262,22 @@ def main():
 
     patches = {}
 
+    # Strip our own blocks first: this makes the script re-runnable on an archive
+    # it already patched (Percho upgrades aside, the bridge evolves).
     mainjs = blobs["/out/main/index.js"].decode()
+    mainjs = strip_block(strip_block(mainjs, "main-ipc"), "region-top")
     mainjs = patch(mainjs, REGION_ANCHOR, REGION_PATCH, "main UI_REGIONS")
-    if '"bw:annotations"' in mainjs:
-        sys.exit("✗ main already patched")
-    mainjs = mainjs.rstrip("\n") + "\n" + MAIN_IPC
+    mainjs = mainjs.rstrip("\n") + "\n" + wrap("main-ipc", MAIN_IPC.rstrip("\n")) + "\n"
     patches["/out/main/index.js"] = mainjs.encode()
 
     preload = blobs["/out/preload/index.cjs"].decode()
-    if "bwAnnotations" in preload:
-        sys.exit("✗ preload already patched")
+    preload = strip_block(preload, "preload-api")
     preload = patch(preload, PRELOAD_ANCHOR, PRELOAD_PATCH, "preload api")
     patches["/out/preload/index.cjs"] = preload.encode()
 
     r = blobs[renderer].decode()
+    for name in ("region-top", "region-case", "renderer-api"):
+        r = strip_block(r, name)
     r = patch(r, REGION_ANCHOR, REGION_PATCH, "renderer UI_REGIONS")
     r = patch(r, REGION_CASE_ANCHOR, REGION_CASE_PATCH, "renderer RegionHost case")
     r = patch(r, PERCHO_UI_ANCHOR, PERCHO_UI_PATCH, "renderer PerchoUI")
@@ -238,10 +286,10 @@ def main():
 
     original = dict(blobs)
     blobs.update(patches)
-    build_asar(header, blobs, OUT)
+    build_asar(header, blobs, out_path)
 
     # verify round trip
-    h2, d2, _ = read_asar(OUT)
+    h2, d2, _ = read_asar(out_path)
     got = {}
     for path, node in walk(h2):
         if node.get("unpacked"):
@@ -253,9 +301,44 @@ def main():
         if got[path] != body:
             sys.exit(f"✗ {path} did not round-trip")
     changed = [p for p in patches if original.get(p) != got[p]]
-    if len(changed) != 3:
-        sys.exit(f"✗ expected 3 patched entries, got {changed}")
-    print(f"✓ wrote {OUT}  ({os.path.getsize(OUT) / 1e6:.0f} MB, {len(got)} entries)")
+    if len(changed) > 3:
+        sys.exit(f"✗ patched more entries than expected: {changed}")
+    # 幂等性：每个块必须恰好一对标记（重复运行不会叠加，也不会吃掉邻行）
+    for name in ("main-ipc", "preload-api", "region-top", "region-case", "renderer-api"):
+        for path, body in got.items():
+            if path not in patches:
+                continue
+            text = body.decode("utf-8", "ignore")
+            starts = text.count(B_START % name)
+            ends = text.count(B_END % name)
+            if starts != ends:
+                sys.exit(f"✗ unbalanced {name} markers in {path}")
+    for name, path in (
+        ("region-top", "/out/main/index.js"),
+        ("main-ipc", "/out/main/index.js"),
+        ("preload-api", "/out/preload/index.cjs"),
+        ("region-top", renderer),
+        ("region-case", renderer),
+        ("renderer-api", renderer),
+    ):
+        text = got[path].decode()
+        if text.count(B_START % name) != 1:
+            sys.exit(f"✗ {name} block missing in {path}")
+    # 让 node 亲自解析一遍：补丁块写错时在这里就死，而不是等 Percho 白屏。
+    for path, suffix in (
+        ("/out/main/index.js", ".mjs"),
+        ("/out/preload/index.cjs", ".cjs"),
+        (renderer, ".mjs"),
+    ):
+        tmp = os.path.join("/tmp", "bw-patch-check" + suffix)
+        with open(tmp, "wb") as f:
+            f.write(got[path])
+        proc = subprocess.run(["node", "--check", tmp], capture_output=True, text=True)
+        os.unlink(tmp)
+        if proc.returncode != 0:
+            sys.exit(f"✗ syntax error in {path}:\n{proc.stderr[-1200:]}")
+
+    print(f"✓ wrote {out_path}  ({os.path.getsize(out_path) / 1e6:.0f} MB, {len(got)} entries)")
     print(f"  patched: {', '.join(changed)}")
 
 

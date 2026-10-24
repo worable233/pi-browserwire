@@ -1,8 +1,9 @@
 # Percho 补丁：输入框上方的批注条
 
 可选件。不打补丁时 `pi-browserwire` 一切照常工作（批注随消息发送，详情见仓库根
-README）；打上补丁后，输入框正上方多一条 `N 条批注` 的胶囊，悬停展开列表，逐条
-`×` 删除。
+README）；打上补丁后，输入框正上方多一条 `N 条批注` 的胶囊：**点击展开**列表（再点一次 /
+点外面 / Esc 收起），逐条 `×` 删除。列表里只有**还没发出去**的批注——随消息
+发出后自动消失。
 
 ## 为什么需要补丁
 
@@ -20,7 +21,8 @@ README）；打上补丁后，输入框正上方多一条 `N 条批注` 的胶�
 1. 新区域 `composer.top`（`RegionHost` 里一个 case + composer JSX 里一行挂载）；
 2. `window.PerchoUI.annotations = { list(), remove(file, id) }`，背后是主进程
    `bw:annotations` 通道，读写 `~/.pi/bw/sessions/<name>/annotations.json`（取最近
-   改动过的会话）。
+   改动过的会话），并读取同目录的 `sent.json`（pi 扩展在发送时写入 `id → updatedAt`）
+   把「已发送」标出来，卡片据此只显示待发送的批注。
 
 `app.asar` 可执行文件本身没有被替换，Esbuild 二进制等 unpacked 资源原样保留。
 
@@ -36,6 +38,14 @@ python3 percho/patch-percho.py     # 生成 /tmp/app-patched.asar（不落盘到
 
 做完之后去 **设置 → 外观 → UI 插件**（不是「扩展」——那是 pi 扩展，另一套系统）
 打开总开关并启用「浏览器批注条」——这是信任门，agent 不能代劳。
+
+补丁可重复运行（每次插入的块都带 `bw-patch:<name> start/end` 标记，脚本先摘掉
+旧块再按锚点重打），所以改完桥接逻辑不用回滚备份：
+
+```bash
+python3 percho/patch-percho.py                 # 直接在已打补丁的 asar 上重打
+python3 percho/patch-percho.py <src.asar> <out.asar>
+```
 
 插件目录必须是**真实目录**，不能用 symlink：
 

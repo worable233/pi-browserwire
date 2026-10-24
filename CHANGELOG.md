@@ -68,6 +68,17 @@
   button per row. The patch keeps every other asar entry byte-identical and re-checks
   its anchors on every run, so a Percho upgrade fails loudly instead of half-patching.
 
+### Changed
+- **Annotation card is click-to-open** and shows only what has not been sent yet.
+  Hover-to-expand fired by accident whenever the pointer crossed the composer, and
+  rows lingered after the message carrying them had already gone out. The pill now
+  toggles on click (closes on outside click / Esc), and the extension records what
+  it attached in `sent.json` next to `annotations.json`, so the card empties itself
+  on send. Editing an annotation bumps `updatedAt` and brings it back.
+- `percho/patch-percho.py` is re-runnable: every inserted block is wrapped in
+  `bw-patch:<name>` markers that are stripped before re-patching, and the result is
+  parsed with `node --check` before the archive is written.
+
 ### Fixed
 - **Esc did nothing while annotating.** The keydown handler only recognised Esc
   inside an input or contenteditable, so with the veil up and no panel open —

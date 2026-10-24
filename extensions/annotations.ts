@@ -12,7 +12,7 @@
  * which is the documented place where an extension may replace messages.
  */
 
-import { existsSync, mkdirSync, readFileSync, watch } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -150,11 +150,43 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 
 	const file = annFile(resolveSession(opts.session));
 	const watchDir = dirname(file);
+	// 已发送标记落在批注同目录：主进程的补丁读它来把「发过的」从卡片里去掉
+	// （卡片只显示待发送的，发完就消失）。只写这个文件，绝不回写 annotations.json，
+	// 免得和 CLI 的原子写抢。
+	const sentFile = join(watchDir, "sent.json");
 
 	/** 已随消息发送过的批注：id + updatedAt，改动过的算新的 */
 	const sent = new Set<string>();
 	const itemSig = (a: Annotation) => `${a.id}:${a.updatedAt ?? 0}`;
 	const unsent = (items: Annotation[]) => items.filter((a) => !sent.has(itemSig(a)));
+
+	const readSent = (): Record<string, number> => {
+		try {
+			const d = JSON.parse(readFileSync(sentFile, "utf8"));
+			return d && typeof d === "object" ? d : {};
+		} catch {
+			return {};
+		}
+	};
+	for (const [id, at] of Object.entries(readSent())) sent.add(`${id}:${Number(at) || 0}`);
+
+	/** 原子写：tmp + rename，和 CLI 的写法一致 */
+	const persistSent = () => {
+		try {
+			mkdirSync(watchDir, { recursive: true });
+			const live = new Set(readItems(file).map((a) => a.id));
+			const map: Record<string, number> = {};
+			for (const sig of sent) {
+				const at = sig.lastIndexOf(":");
+				const id = sig.slice(0, at);
+				if (!live.has(id)) continue; // 批注已删，标记也清掉
+				map[id] = Number(sig.slice(at + 1)) || 0;
+			}
+			const tmp = `${sentFile}.tmp-${process.pid}`;
+			writeFileSync(tmp, JSON.stringify(map), "utf8");
+			renameSync(tmp, sentFile);
+		} catch {}
+	};
 
 	/**
 	 * 输入框保持干净：不再把批注正文塞进草稿，只提示数量，
@@ -221,6 +253,9 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 			}
 			// 清掉已发送标记，让下一条消息重新带上全部批注
 			sent.clear();
+			try {
+				rmSync(sentFile, { force: true });
+			} catch {}
 			lastSig = "";
 			pending = items;
 			ctx.ui.notify(`${items.length} 条批注将随下一条消息附上`, "info");
@@ -278,6 +313,7 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 		next[idx] = { ...msg, content: [...existing, ...(summary ? [{ type: "text", text: summary }] : []), ...images] };
 
 		for (const a of todo) sent.add(itemSig(a));
+		persistSent();
 		return { messages: next };
 	});
 }
