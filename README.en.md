@@ -134,7 +134,7 @@ await tools.browser({ action: "assert-text", target: "h1", arg: "Welcome" });
 
 ### Human annotations
 
-Run `bw annotate` to enter annotation mode. Click an element to open a note composer below it, add a note, and press Enter to save. Paste screenshots with `⌘V`; click a numbered badge later to edit or delete its note. Press Esc to discard the current note.
+Run `bw annotate` to enter annotation mode. Click an element to open a note composer below it, add a note, and press Enter to save. Paste screenshots with `⌘V`; click a numbered badge later to edit or delete its note. Esc works in two steps: with the note panel open it discards the note and keeps you in annotation mode; a second Esc leaves annotation mode entirely (saved badges stay).
 
 Selection freezes while the composer is open, so the note remains attached to the selected element. Annotations are stored per page URL with rich text, plain text, and pasted images. The extension watches the annotation file and attaches unsent notes to your next message as it is sent, so the composer never gets filled with text; agents can also read them directly with `ann` or `ann-export`. `annotate` and `pick` are interactive human actions, not ways for an agent to fabricate feedback.
 

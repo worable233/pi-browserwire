@@ -186,7 +186,7 @@ const MARK_STYLE = {
 /* ==================================================================== */
 
 /** 页面注入代码的版本：改 __bwInit/__bwAnnotator/__bwHotkeys/__bwPicker 时必须 +1 */
-const RUNTIME_V = 10;
+const RUNTIME_V = 11;
 
 function __bwInit(style) {
 	if (window.__bw) {
@@ -346,17 +346,23 @@ function __bwHotkeys(hotkey) {
 		.join("+");
 
 	const handler = (e) => {
-		// 输入框/可编辑区内不触发，避免打字冲突
-		const t = e.target;
-		if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) {
-			// 但仍允许 Esc 退出
-			if (e.key === "Escape" && window.__bwAnnActive) {
-				e.preventDefault();
-				window.__bwAnn && window.__bwAnn.closePanel();
-				window.__bwAnn && window.__bwAnn.setActive(false);
+		// 批注模式下 Esc：面板开着就先丢当前批注，再按一次退出批注模式。
+		// 捕获阶段先于编辑器自己的 keydown，所以这里统一处理，不必再区分焦点。
+		if (e.key === "Escape" && window.__bwAnnActive) {
+			e.preventDefault();
+			e.stopPropagation();
+			const ann = window.__bwAnn;
+			if (!ann) {
+				window.__bwAnnActive = false;
+				return;
 			}
+			if (ann.isOpen && ann.isOpen()) ann.closePanel();
+			else ann.setActive(false);
 			return;
 		}
+		// 输入框/可编辑区内不触发，避免打字冲突
+		const t = e.target;
+		if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
 		if (norm(e) !== target) return;
 		e.preventDefault();
 		e.stopPropagation();
@@ -376,8 +382,8 @@ function __bwHotkeys(hotkey) {
 		if (!d || typeof d !== "object" || typeof d.__bwKey !== "string") return;
 		if (d.__bwKey === "escape") {
 			if (window.__bwAnnActive && window.__bwAnn) {
-				window.__bwAnn.closePanel();
-				window.__bwAnn.setActive(false);
+				if (window.__bwAnn.isOpen && window.__bwAnn.isOpen()) window.__bwAnn.closePanel();
+				else window.__bwAnn.setActive(false);
 			}
 			return;
 		}
@@ -1210,7 +1216,7 @@ function __bwAnnotator() {
 		window.__bwAnnDelete = (id) => window.__bwAnnOut.push({ op: "delete", payload: { id } });
 	}
 
-	window.__bwAnn = { veil, closePanel, openPanel, setActive };
+	window.__bwAnn = { veil, closePanel, openPanel, setActive, isOpen: () => !!panel };
 	return "injected";
 }
 
@@ -3173,7 +3179,7 @@ async function cmdAnnotate(opts) {
 		);
 		await evaluate(cdp, `window.__bwAnn.setActive(true)`);
 		console.log(
-			`ok annotate ${mine.length} restored | 点击元素添加批注，${readSettings().hotkey} 切换，Esc 取消`,
+			`ok annotate ${mine.length} restored | 点击元素添加批注，${readSettings().hotkey} 切换，Esc 退出`,
 		);
 	} finally {
 		cdp.close();

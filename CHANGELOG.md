@@ -68,6 +68,15 @@
   button per row. The patch keeps every other asar entry byte-identical and re-checks
   its anchors on every run, so a Percho upgrade fails loudly instead of half-patching.
 
+### Fixed
+- **Esc did nothing while annotating.** The keydown handler only recognised Esc
+  inside an input or contenteditable, so with the veil up and no panel open —
+  the common case — Esc was swallowed and the only way out was the hotkey again.
+  Esc is now handled in the capture phase for the whole annotation mode, in two
+  steps: with the note panel open it discards the note and keeps the mode; without
+  a panel it leaves the mode (saved badges stay). The iframe bridge mirrors the
+  same two-step logic.
+
 ### Changed
 - **Annotations no longer get typed into the composer at all.** They are attached
   to the outgoing message through the `context` event instead — the documented
