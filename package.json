@@ -25,6 +25,7 @@
     "cli/",
     "extensions/",
     "skills/",
+    "percho/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

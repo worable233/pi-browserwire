@@ -29,17 +29,24 @@ pi-browserwire lets pi inspect and operate a real Chrome, Chromium, Edge, or Bra
 
 ## Start here
 
-### Install from a local checkout
-
-The npm package is not published yet. From the directory containing this checkout, install it into pi:
+### Install into pi
 
 ```bash
-pi install ./pi-browserwire
+pi install npm:pi-browserwire
 ```
 
-After a future npm release, the package can be installed with `pi install npm:pi-browserwire`.
+For development, install a local checkout instead: `pi install ./pi-browserwire`.
 
 Requirements: Node.js 22+ and an installed Chrome, Chromium, Microsoft Edge, or Brave browser. The CLI uses Node's built-in `WebSocket` and `fetch`; the package has no runtime dependencies.
+
+### Optional: annotation bar above the composer
+
+The default install needs no patches — annotations ride along with your next message
+and the composer stays clean. To add an `N 条批注` pill right above Percho's composer
+(click to expand, delete rows, gone once sent), patch the host:
+`python3 percho/patch-percho.py && ./percho/apply.sh`. See
+[percho/README.md](percho/README.md). Optional; a Percho upgrade wipes it, so `percho/watchdog.sh install`
+re-applies it in the background.
 
 ### Run the CLI
 

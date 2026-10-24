@@ -29,17 +29,22 @@ pi-browserwire 让 pi 通过 Chrome DevTools Protocol（CDP）检查并操作真
 
 ## 快速开始
 
-### 从本地检出目录安装
-
-npm 包目前尚未发布。从包含本仓库的目录运行以下命令，将本地检出安装到 pi：
+### 安装到 pi
 
 ```bash
-pi install ./pi-browserwire
+pi install npm:pi-browserwire
 ```
 
-未来发布到 npm 后，可使用 `pi install npm:pi-browserwire` 安装。
+开发时可从本地检出目录安装：`pi install ./pi-browserwire`。
 
 运行要求：Node.js 22+，以及已安装的 Chrome、Chromium、Microsoft Edge 或 Brave。CLI 使用 Node.js 内置的 `WebSocket` 和 `fetch`，没有运行时依赖。
+
+### 可选：输入框上方的批注条
+
+默认安装不需要任何补丁——批注随下一条消息一起发送，输入框保持干净。如果想让
+Percho 输入框正上方多一条 `N 条批注` 的胶囊（点击展开、逐条删除、发完自动消失），
+需要给宿主打一个小补丁：`python3 percho/patch-percho.py && ./percho/apply.sh`，
+详见 [percho/README.md](percho/README.md)。这是可选的；宿主升级后补丁会消失，可以装一个登录项让它在后台自动补回来（`percho/watchdog.sh install`）。
 
 ### 运行 CLI
 
