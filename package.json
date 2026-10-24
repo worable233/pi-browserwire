@@ -16,6 +16,10 @@
   "bin": {
     "bw": "./cli/bw.mjs"
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "files": [
     "index.ts",
     "cli/",
