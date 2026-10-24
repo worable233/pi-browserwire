@@ -2,6 +2,27 @@
 
 ## 0.2.0
 
+### Optional: annotation card above the composer
+
+Percho has no mount point above the composer and no channel that can carry
+structured data into a UI plugin, so the `N 条批注` pill needs a host patch. It is
+one command, part of `bw`, and reversible:
+
+```
+bw percho-patch        # patch (atomic swap, backup kept, restart to take effect)
+bw percho-status       # patch / backup / plugin / toggle state
+bw percho-unpatch      # restore from the newest backup
+```
+
+The patcher runs on Node with no dependencies (the Python script and the
+background watchdog are gone). Every inserted block is wrapped in
+`bw-patch:<name>` markers that get stripped before re-patching, so the command is
+idempotent — three consecutive runs produce byte-identical archives — and each run
+parses the three patched entries with `node --check` before swapping, so a bad
+patch fails instead of white-screening Percho. Without the patch nothing breaks:
+annotations simply ride along with the next message.
+
+
 ### Annotations
 - Composer is now a **rich text** field (`contenteditable`) with `⌘B` / `⌘I` /
   `⌘U`, `Shift+Enter` for a newline, and preserved formatting on paste. Stored as

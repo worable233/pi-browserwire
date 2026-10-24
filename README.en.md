@@ -44,9 +44,10 @@ Requirements: Node.js 22+ and an installed Chrome, Chromium, Microsoft Edge, or 
 The default install needs no patches — annotations ride along with your next message
 and the composer stays clean. To add an `N 条批注` pill right above Percho's composer
 (click to expand, delete rows, gone once sent), patch the host:
-`python3 percho/patch-percho.py && ./percho/apply.sh`. See
-[percho/README.md](percho/README.md). Optional; a Percho upgrade wipes it, so `percho/watchdog.sh install`
-re-applies it in the background.
+`bw percho-patch` (restart Percho to take effect), `bw percho-status` to see
+whether the patch, its backup and the plugin are in place, and `bw percho-unpatch`
+to restore. See [percho/README.md](percho/README.md). Optional, and a Percho
+upgrade wipes it — `bw percho-status` tells you when to re-run it.
 
 ### Run the CLI
 

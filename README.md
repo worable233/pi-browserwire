@@ -43,8 +43,16 @@ pi install npm:pi-browserwire
 
 默认安装不需要任何补丁——批注随下一条消息一起发送，输入框保持干净。如果想让
 Percho 输入框正上方多一条 `N 条批注` 的胶囊（点击展开、逐条删除、发完自动消失），
-需要给宿主打一个小补丁：`python3 percho/patch-percho.py && ./percho/apply.sh`，
-详见 [percho/README.md](percho/README.md)。这是可选的；宿主升级后补丁会消失，可以装一个登录项让它在后台自动补回来（`percho/watchdog.sh install`）。
+给宿主打一次补丁：
+
+```bash
+bw percho-patch     # 打补丁，重启 Percho 后生效
+bw percho-status    # 看补丁 / 备份 / 插件状态
+bw percho-unpatch   # 从备份还原
+```
+
+补丁只在宿主没有这条路时才需要（原因见 [percho/README.md](percho/README.md)），
+且每次 Percho 升级后要重打一次——`bw percho-status` 会告诉你当前是否还是打过的状态。
 
 ### 运行 CLI
 

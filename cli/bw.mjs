@@ -12,8 +12,21 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, statSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+	closeSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -3357,6 +3370,276 @@ async function cmdAnnExport() {
 	console.log(lines.join("\n"));
 }
 
+// ---------------------------------------------------------------- Percho 宿主补丁
+// 宿主没有这条路：区域表里没有输入框上方这一格，渲染进程 sandbox 且不存在任何
+// 能把结构化数据送进插件的通道。补丁只加两件事 —— composer.top 区域和读
+// annotations.json 的桥。每段插入都带 bw-patch:<name> start/end 标记，重打前先
+// 摘掉，因此可以反复运行。
+const PERCHO_APP = "/Applications/Percho.app/Contents/Resources/app.asar";
+const PERCHO_DIR = "/Applications/Percho.app/Contents/Resources";
+
+const BW_PATCH = {
+	"REGION_ANCHOR": "  ComposerFooter: \"composer.footer\",\n  SettingsPanel: \"settings.panel\"",
+	"REGION_PATCH": "  ComposerFooter: \"composer.footer\",\n/* bw-patch:region-top start */\n  /** 输入框正上方：整行卡片（bw 批注条） */\n  ComposerTop: \"composer.top\",\n/* bw-patch:region-top end */  SettingsPanel: \"settings.panel\"",
+	"REGION_CASE_ANCHOR": "    case UI_REGIONS.ComposerFooter:\n      return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: list2.map(renderContribution) });",
+	"REGION_CASE_PATCH": "    case UI_REGIONS.ComposerFooter:\n      return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: list2.map(renderContribution) });/* bw-patch:region-case start */\n    case UI_REGIONS.ComposerTop:\n      return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: list2.map(renderContribution) });/* bw-patch:region-case end */",
+	"PRELOAD_ANCHOR": "  getPathForFile: (file) => electron.webUtils.getPathForFile(file),",
+	"PRELOAD_PATCH": "  getPathForFile: (file) => electron.webUtils.getPathForFile(file),/* bw-patch:preload-api start */\n  /** bw 批注桥（本地补丁）：{ action: \"list\" } / { action: \"delete\", file, id } */\n  bwAnnotations: (args) => electron.ipcRenderer.invoke(\"bw:annotations\", args),/* bw-patch:preload-api end */",
+	"PERCHO_UI_ANCHOR": "    useUiPreferencesStore\n  }\n};",
+	"PERCHO_UI_PATCH": "    useUiPreferencesStore\n  }\n};/* bw-patch:renderer-api start */\n/* bw 批注桥（本地补丁）：UI 插件只拿 PerchoUI，不透出 window.pi */\nwindow.PerchoUI.annotations = {\n  list: () => window.pi.bwAnnotations({ action: \"list\" }),\n  remove: (file, id) => window.pi.bwAnnotations({ action: \"delete\", file, id })\n};/* bw-patch:renderer-api end */",
+	"MAIN_IPC": "\n/* ---- bw 批注桥（本地补丁，见 pi-browserwire/percho/patch-percho.py） ----\n   读/删 ~/.pi/bw/sessions/<name>/annotations.json，取最近改动过的那个会话。\n   同目录的 sent.json 由 pi 扩展写入（id → updatedAt），用来标出「已随消息发出」\n   的批注：卡片只显示还没发的，发完就消失。 */\nconst BW_ANN_ROOT = join(homedir(), \".pi\", \"bw\", \"sessions\");\nfunction bwAnnSent(file) {\n  try {\n    const d = JSON.parse(readFileSync(file, \"utf8\"));\n    return d && typeof d === \"object\" ? d : {};\n  } catch {\n    return {};\n  }\n}\nfunction bwAnnRead() {\n  try {\n    const files = [];\n    for (const name of readdirSync(BW_ANN_ROOT)) {\n      const file = join(BW_ANN_ROOT, name, \"annotations.json\");\n      try {\n        files.push({ file, mtime: statSync(file).mtimeMs });\n      } catch {}\n    }\n    files.sort((a, b) => b.mtime - a.mtime);\n    if (!files.length) return { file: null, items: [], seq: 0 };\n    const file = files[0].file;\n    const data = JSON.parse(readFileSync(file, \"utf8\"));\n    const sent = bwAnnSent(file.slice(0, file.lastIndexOf(\"/\")) + \"/sent.json\");\n    const items = (Array.isArray(data.items) ? data.items : []).map((a) =>\n      a && a.id && sent[a.id] === a.updatedAt ? { ...a, sent: true } : a\n    );\n    return { file, items, seq: data.seq ?? 0 };\n  } catch {\n    return { file: null, items: [], seq: 0 };\n  }\n}\nipcMain.handle(\"bw:annotations\", async (_e, args) => {\n  const action = args && args.action ? args.action : \"list\";\n  if (action === \"delete\") {\n    const current = bwAnnRead();\n    const file = args && args.file ? args.file : current.file;\n    if (!file || !resolve(file).startsWith(resolve(BW_ANN_ROOT))) return current;\n    try {\n      const data = JSON.parse(readFileSync(file, \"utf8\"));\n      const id = String((args && args.id) ?? \"\");\n      data.items = (Array.isArray(data.items) ? data.items : []).filter((a) => a && a.id !== id);\n      data.items.forEach((a, i) => {\n        a.n = i + 1;\n      });\n      data.seq = (data.seq ?? 0) + 1;\n      const tmp = `${file}.tmp-${process.pid}`;\n      writeFileSync(tmp, JSON.stringify(data, null, 2), \"utf8\");\n      renameSync(tmp, file);\n      const sentFile = file.slice(0, file.lastIndexOf(\"/\")) + \"/sent.json\";\n      try {\n        const sent = bwAnnSent(sentFile);\n        if (sent[id] !== void 0) {\n          delete sent[id];\n          writeFileSync(sentFile, JSON.stringify(sent), \"utf8\");\n        }\n      } catch {}\n      return { file, items: data.items, seq: data.seq };\n    } catch {\n      return current;\n    }\n  }\n  return bwAnnRead();\n});\n",
+	"MOUNT_MARK": "      /* @__PURE__ */ jsxRuntimeExports.jsx(RegionHost, { region: UI_REGIONS.ComposerTop }),",
+	"B_START": "/* bw-patch:%s start */",
+	"B_END": "/* bw-patch:%s end */"
+};
+
+function asarRead(file) {
+	const raw = readFileSync(file);
+	if (raw.length < 16) throw new Error(`${file} 不是 asar`);
+	const headerStart = raw.readUInt32LE(4);
+	const jsonLen = raw.readUInt32LE(12);
+	const header = JSON.parse(raw.subarray(16, 16 + jsonLen).toString("utf8"));
+	return { header, data: raw.subarray(8 + headerStart) };
+}
+
+function* walkAsar(node, prefix = "") {
+	for (const [name, child] of Object.entries(node.files || {})) {
+		const path = `${prefix}/${name}`;
+		if (child.files) yield* walkAsar(child, path);
+		else yield [path, child];
+	}
+}
+
+function asarBuild(header, dataByPath, outFile) {
+	let offset = 0;
+	for (const [path, node] of walkAsar(header)) {
+		const body = dataByPath.get(path);
+		if (!body || node.unpacked) continue;
+		node.size = body.length;
+		node.offset = String(offset);
+		offset += body.length;
+	}
+	let hdr = Buffer.from(JSON.stringify(header), "utf8");
+	const pad = (4 - (hdr.length % 4)) % 4;
+	if (pad) hdr = Buffer.concat([hdr, Buffer.alloc(pad, 0x20)]);
+	const jsonLen = hdr.length;
+	const fd = openSync(outFile, "w");
+	try {
+		const head = Buffer.alloc(16);
+		head.writeUInt32LE(4, 0);
+		head.writeUInt32LE(jsonLen + 8, 4);
+		head.writeUInt32LE(jsonLen + 4, 8);
+		head.writeUInt32LE(jsonLen, 12);
+		writeSync(fd, head);
+		writeSync(fd, hdr);
+		for (const [path, node] of walkAsar(header)) {
+			const body = dataByPath.get(path);
+			if (!body || node.unpacked) continue;
+			writeSync(fd, body);
+		}
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function patchText(text, old, next, label) {
+	if (!text.includes(old)) throw new Error(`锚点失配：${label}（Percho 结构变了？）`);
+	return text.replace(old, next);
+}
+
+/** 摘掉上一次插入的段：标记成对出现，这是幂等的前提 */
+function stripBlock(text, name) {
+	const start = BW_PATCH.B_START.replace("%s", name);
+	const end = BW_PATCH.B_END.replace("%s", name);
+	let out = "";
+	let i = 0;
+	for (;;) {
+		const a = text.indexOf(start, i);
+		const b = a < 0 ? -1 : text.indexOf(end, a);
+		if (a < 0 || b < 0) return out + text.slice(i);
+		out += text.slice(i, a);
+		i = b + end.length;
+	}
+}
+
+const wrapBlock = (name, body) =>
+	BW_PATCH.B_START.replace("%s", name) + body + BW_PATCH.B_END.replace("%s", name);
+
+function mountComposerCard(src) {
+	if (src.includes(BW_PATCH.MOUNT_MARK)) return src;
+	const marker = "onMouseDown: handleComposerMouseDown,";
+	if (src.split(marker).length !== 2) throw new Error("composer 锚点不唯一");
+	const at = src.indexOf(marker);
+	const openAt = src.lastIndexOf("jsxRuntimeExports.jsxs(", at);
+	if (openAt < 0) throw new Error("composer 锚点失配");
+	const lineStart = src.lastIndexOf("\n", openAt) + 1;
+	return src.slice(0, lineStart) + BW_PATCH.MOUNT_MARK + "\n" + src.slice(lineStart);
+}
+
+/** 打出补丁包（不落盘到 App），返回 { outFile, entries, changed } */
+function perchoBuild(asarFile, outFile) {
+	const { header, data } = asarRead(asarFile);
+	const blobs = new Map();
+	for (const [path, node] of walkAsar(header)) {
+		if (node.unpacked) continue;
+		const at = Number(node.offset);
+		blobs.set(path, data.subarray(at, at + node.size));
+	}
+	const renderer = [...blobs.keys()].filter(
+		(p) =>
+			p.startsWith("/out/renderer/assets/index-") &&
+			p.endsWith(".js") &&
+			blobs.get(p).includes("window.PerchoUI"),
+	);
+	if (renderer.length !== 1) throw new Error(`找不到唯一的渲染器 bundle（${renderer.length} 个）`);
+
+	const patches = new Map();
+
+	let mainjs = stripBlock(stripBlock(blobs.get("/out/main/index.js").toString(), "main-ipc"), "region-top");
+	mainjs = patchText(mainjs, BW_PATCH.REGION_ANCHOR, BW_PATCH.REGION_PATCH, "main UI_REGIONS");
+	mainjs = `${mainjs.replace(/\n+$/, "")}\n${wrapBlock("main-ipc", BW_PATCH.MAIN_IPC.replace(/\n+$/, ""))}\n`;
+	patches.set("/out/main/index.js", Buffer.from(mainjs));
+
+	let preload = stripBlock(blobs.get("/out/preload/index.cjs").toString(), "preload-api");
+	preload = patchText(preload, BW_PATCH.PRELOAD_ANCHOR, BW_PATCH.PRELOAD_PATCH, "preload api");
+	patches.set("/out/preload/index.cjs", Buffer.from(preload));
+
+	let r = blobs.get(renderer[0]).toString();
+	for (const name of ["region-top", "region-case", "renderer-api"]) r = stripBlock(r, name);
+	r = patchText(r, BW_PATCH.REGION_ANCHOR, BW_PATCH.REGION_PATCH, "renderer UI_REGIONS");
+	r = patchText(r, BW_PATCH.REGION_CASE_ANCHOR, BW_PATCH.REGION_CASE_PATCH, "renderer RegionHost case");
+	r = patchText(r, BW_PATCH.PERCHO_UI_ANCHOR, BW_PATCH.PERCHO_UI_PATCH, "renderer PerchoUI");
+	r = mountComposerCard(r);
+	patches.set(renderer[0], Buffer.from(r));
+
+	// 每个标记恰好一对（重跑不会叠加、也不会吃掉邻行）
+	const expect = new Map([
+		["/out/main/index.js", ["main-ipc", "region-top"]],
+		["/out/preload/index.cjs", ["preload-api"]],
+		[renderer[0], ["region-top", "region-case", "renderer-api"]],
+	]);
+	for (const [path, names] of expect) {
+		const text = patches.get(path).toString();
+		for (const name of names) {
+			const starts = text.split(BW_PATCH.B_START.replace("%s", name)).length - 1;
+			const ends = text.split(BW_PATCH.B_END.replace("%s", name)).length - 1;
+			if (starts !== 1 || ends !== 1) throw new Error(`${path} 的 ${name} 标记异常（${starts}/${ends}）`);
+		}
+	}
+
+	// 让 node 亲口解析一遍：写错在这里死，而不是等 Percho 白屏
+	for (const [path, buf] of patches) {
+		const tmp = join(tmpdir(), `bw-patch-check${path.endsWith(".cjs") ? ".cjs" : ".mjs"}`);
+		writeFileSync(tmp, buf);
+		try {
+			const env = process.versions.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: "1" } : process.env;
+			execFileSync(process.execPath, ["--check", tmp], { env, stdio: "pipe" });
+		} catch (err) {
+			throw new Error(`${path} 语法检查失败：${String(err.stderr || err.message).slice(-400)}`);
+		} finally {
+			try {
+				unlinkSync(tmp);
+			} catch {}
+		}
+	}
+
+	for (const [path, buf] of patches) blobs.set(path, buf);
+	const count = [...walkAsar(header)].length;
+	asarBuild(header, blobs, outFile);
+	if ([...walkAsar(asarRead(outFile).header)].length !== count) throw new Error("条目数变了，放弃");
+	return { outFile, entries: count, changed: [...patches.keys()] };
+}
+
+function perchoIsPatched(file) {
+	try {
+		return readFileSync(file).includes("bw-patch:main-ipc start");
+	} catch {
+		return false;
+	}
+}
+
+function perchoBackups(dir) {
+	try {
+		return readdirSync(dir)
+			.filter((n) => n.startsWith("app.asar.bak-"))
+			.sort()
+			.reverse();
+	} catch {
+		return [];
+	}
+}
+
+function perchoPluginState() {
+	const dir = join(homedir(), ".percho", "ui-plugins", "bw-annotations");
+	const cfgDir = perchoConfigDir();
+	let enabled = false;
+	try {
+		const cfg = JSON.parse(readFileSync(join(cfgDir, "ui-plugins.json"), "utf8"));
+		enabled = !!cfg?.plugins?.["bw-annotations"]?.enabled && cfg?.enabled !== false;
+	} catch {}
+	return { dir, exists: existsSync(join(dir, "plugin.json")), enabled };
+}
+
+async function cmdPerchoStatus() {
+	if (!existsSync(PERCHO_APP)) throw new Error(`找不到 ${PERCHO_APP}`);
+	const size = (statSync(PERCHO_APP).size / 1e6).toFixed(0);
+	const backups = perchoBackups(PERCHO_DIR);
+	const plug = perchoPluginState();
+	const rows = [
+		["asar", `${PERCHO_APP}  ${size} MB`],
+		["补丁", perchoIsPatched(PERCHO_APP) ? "已安装（composer.top + 批注桥）" : "未安装"],
+		["备份", backups.length ? backups.slice(0, 3).join("\n         ") : "无"],
+		["插件", `${plug.exists ? "已放置" : "缺失"}  ${plug.dir}`],
+		["开关", plug.enabled ? "已在设置里启用" : "未启用（设置 → 外观 → UI 插件）"],
+	];
+	// 中文占两列，padEnd 按字符数算会歪
+	const pad = (t) => t + " ".repeat(Math.max(1, 8 - [...t].reduce((n, ch) => n + (ch.charCodeAt(0) > 127 ? 2 : 1), 0)));
+	for (const [k, v] of rows) console.log(`${pad(k)} ${v}`);
+}
+
+async function cmdPerchoPatch(flags) {
+	if (flags.from) {
+		// 拿任意 asar 试打（自测 / 从备份重建用），不碰 App
+		const to = join(tmpdir(), `bw-percho-from-${Date.now()}.asar`);
+		const res = perchoBuild(String(flags.from), to);
+		console.log(`ok ${to}`);
+		console.log(`   ${res.entries} 条目，改动 ${res.changed.length} 处`);
+		return;
+	}
+	if (!existsSync(PERCHO_APP)) throw new Error(`找不到 ${PERCHO_APP}`);
+	if (perchoIsPatched(PERCHO_APP) && !flags.force) {
+		console.log("ok 已是打过补丁的版本（要重打加 --force）");
+		return;
+	}
+	const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+	const tmp = join(tmpdir(), `bw-percho-${stamp}.asar`);
+	const res = perchoBuild(PERCHO_APP, tmp);
+	if (flags["dry-run"]) {
+		console.log(`ok 构建成功（未换入）：${tmp}`);
+		console.log(`   ${res.entries} 条目，改动 ${res.changed.length} 处`);
+		return;
+	}
+	const backup = `${PERCHO_APP}.bak-${stamp}`;
+	renameSync(PERCHO_APP, backup);
+	renameSync(tmp, PERCHO_APP);
+	console.log(`ok 补丁已换入 ${PERCHO_APP}`);
+	console.log(`   备份 ${backup}`);
+	console.log("   重启 Percho 后生效，然后去 设置 → 外观 → UI 插件 启用「浏览器批注条」");
+}
+
+async function cmdPerchoUnpatch(flags) {
+	const backups = perchoBackups(PERCHO_DIR);
+	if (!backups.length) throw new Error("没有备份可恢复（重装 Percho 也能恢复原样）");
+	const src = `${PERCHO_APP}.bak-${backups[0].slice("app.asar.bak-".length)}`;
+	if (flags["dry-run"]) {
+		console.log(`ok 会用 ${backups[0]} 覆盖（未执行）`);
+		return;
+	}
+	copyFileSync(src, PERCHO_APP);
+	console.log(`ok 已从 ${backups[0]} 恢复`);
+	console.log("   重启 Percho 后生效");
+}
+
 async function cmdAnnClear() {
 	writeAnnotations({ items: [], seq: 0 });
 	// 已发送标记跟着清：否则 sent.json 会留下指向不存在批注的陈旧条目
@@ -4040,6 +4323,11 @@ const HELP = `bw — 浏览器调试 CLI（零依赖）
   marks                      列出标注
   clear                      清除标注
 
+宿主补丁（可选：输入框上方的批注条）
+  percho-status              补丁/备份/插件状态
+  percho-patch [--force]     打补丁（--dry-run 只构建不换入；--from <asar> 打任意副本）
+  percho-unpatch             从最近备份还原（重装 Percho 同样有效）
+
 批注（用户驱动，跨标签页持久）
   annotate                   进入批注模式：点击元素→输入批注；点徽章可编辑
   annotate-done              退出批注模式（保留徽章）
@@ -4215,6 +4503,12 @@ async function dispatch(cmd, argv) {
 			return cmdAnnShot();
 		case "ann-clear":
 			return cmdAnnClear();
+		case "percho-status":
+			return cmdPerchoStatus();
+		case "percho-patch":
+			return cmdPerchoPatch(flags);
+		case "percho-unpatch":
+			return cmdPerchoUnpatch(flags);
 		case "clear":
 			return cmdClear();
 		case "tabs":
