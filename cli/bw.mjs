@@ -20,6 +20,7 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	readSync,
 	renameSync,
 	statSync,
 	unlinkSync,
@@ -3402,6 +3403,21 @@ function asarRead(file) {
 	return { header, data: raw.subarray(8 + headerStart) };
 }
 
+/** 只读 header（不载入 374 MB），用于尺寸/结构比对 */
+function asarHeader(file) {
+	const fd = openSync(file, "r");
+	try {
+		const head = Buffer.alloc(16);
+		readSync(fd, head, 0, 16, 0);
+		const jsonLen = head.readUInt32LE(12);
+		const buf = Buffer.alloc(jsonLen);
+		readSync(fd, buf, 0, jsonLen, 16);
+		return JSON.parse(buf.toString("utf8"));
+	} finally {
+		closeSync(fd);
+	}
+}
+
 function* walkAsar(node, prefix = "") {
 	for (const [name, child] of Object.entries(node.files || {})) {
 		const path = `${prefix}/${name}`;
@@ -3550,9 +3566,28 @@ function perchoBuild(asarFile, outFile) {
 	return { outFile, entries: count, changed: [...patches.keys()] };
 }
 
+/** 分块扫描标记：备份是 374 MB，整文件读进来只为找一串字符太浪费 */
+function fileIncludes(file, needle) {
+	const want = Buffer.from(needle);
+	const fd = openSync(file, "r");
+	try {
+		const chunk = Buffer.alloc(1 << 23);
+		let carry = Buffer.alloc(0);
+		for (;;) {
+			const n = readSync(fd, chunk, 0, chunk.length, null);
+			if (!n) return false;
+			const buf = carry.length ? Buffer.concat([carry, chunk.subarray(0, n)]) : chunk.subarray(0, n);
+			if (buf.includes(want)) return true;
+			carry = Buffer.from(buf.subarray(Math.max(0, buf.length - want.length + 1)));
+		}
+	} finally {
+		closeSync(fd);
+	}
+}
+
 function perchoIsPatched(file) {
 	try {
-		return readFileSync(file).includes("bw-patch:main-ipc start");
+		return fileIncludes(file, "bw-patch:main-ipc start");
 	} catch {
 		return false;
 	}
@@ -3628,15 +3663,37 @@ async function cmdPerchoPatch(flags) {
 }
 
 async function cmdPerchoUnpatch(flags) {
+	// 注意：每次打补丁都会备份「当时那份」——重复打补丁时那份本身也是打过的。
+	// 所以还原必须挑最近一个**未打补丁**的备份，否则 unpatch 等于什么都没做。
+	// 备份可能是「同一个 Percho 版本、未打补丁」，也可能是升级前的旧版本。
+	// 文件大小因补丁本身而不同，不能拿来判断版本；用条目数 + 关键路径来认。
+	const current = asarHeader(PERCHO_APP);
+	const currentEntries = [...walkAsar(current)].length;
+	const currentPaths = new Set([...walkAsar(current)].map(([p]) => p));
 	const backups = perchoBackups(PERCHO_DIR);
-	if (!backups.length) throw new Error("没有备份可恢复（重装 Percho 也能恢复原样）");
-	const src = `${PERCHO_APP}.bak-${backups[0].slice("app.asar.bak-".length)}`;
+	let pick = null;
+	for (const name of backups) {
+		const src = join(PERCHO_DIR, name);
+		try {
+			if (perchoIsPatched(src)) continue;
+			const hdr = asarHeader(src);
+			const paths = [...walkAsar(hdr)].map(([p]) => p);
+			if (paths.length !== currentEntries) continue; // 另一个 Percho 版本
+			if (!paths.every((p) => currentPaths.has(p))) continue;
+			pick = { name, src };
+			break;
+		} catch {
+			continue; // 备份坏了，跳过
+		}
+	}
+	if (!pick) throw new Error("备份里没有可还原的未打补丁版本（重装 Percho 也能恢复原样）");
 	if (flags["dry-run"]) {
-		console.log(`ok 会用 ${backups[0]} 覆盖（未执行）`);
+		console.log(`ok 会用 ${pick.name} 覆盖（未执行）`);
 		return;
 	}
-	copyFileSync(src, PERCHO_APP);
-	console.log(`ok 已从 ${backups[0]} 恢复`);
+	copyFileSync(pick.src, PERCHO_APP);
+	if (perchoIsPatched(PERCHO_APP)) throw new Error("还原后仍带补丁标记，中止");
+	console.log(`ok 已从 ${pick.name} 恢复（未打补丁）`);
 	console.log("   重启 Percho 后生效");
 }
 
