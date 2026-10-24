@@ -6,6 +6,10 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
  * 数据来自宿主补丁 `window.PerchoUI.annotations`（见 pi-browserwire/percho/
  * patch-percho.py）：它读的是 `~/.pi/bw/sessions/<name>/annotations.json`，
  * 取最近改动过的那个会话。插件不碰文件系统，也不需要 window.pi。
+ *
+ * 视觉沿用宿主语言：胶囊 = 「回到底部」那种 `rounded-full border bg-surface/95
+ * shadow-pop backdrop-blur`；弹层 = 模型选择器的 `rounded-xl bg-surface p-1
+ * shadow-pop` + `fade-rule` 两端渐隐分割线 + `rounded-lg` 行。
  */
 
 interface Ann {
@@ -35,7 +39,9 @@ function shortSelector(selector?: string): string {
 	return parts.slice(-2).join(" > ");
 }
 
-function PencilIcon({ size = 12 }: { size?: number }) {
+const sigOf = (list: Ann[]) => list.map((a) => `${a.id}:${a.selector}:${a.note}`).join("|");
+
+function PencilIcon({ size = 13, className }: { size?: number; className?: string }) {
 	return (
 		<svg
 			width={size}
@@ -46,6 +52,7 @@ function PencilIcon({ size = 12 }: { size?: number }) {
 			strokeWidth="2"
 			strokeLinecap="round"
 			strokeLinejoin="round"
+			className={className}
 			aria-hidden="true"
 		>
 			<path d="M12 20h9" />
@@ -54,21 +61,21 @@ function PencilIcon({ size = 12 }: { size?: number }) {
 	);
 }
 
-function Chevron({ up }: { up: boolean }) {
+function ChevronDownIcon({ open }: { open: boolean }) {
 	return (
 		<svg
-			width="10"
-			height="10"
+			width="13"
+			height="13"
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
-			strokeWidth="2.5"
+			strokeWidth="2"
 			strokeLinecap="round"
 			strokeLinejoin="round"
-			className="text-ink-faint"
+			className={open ? "rotate-180 transition-transform" : "transition-transform"}
 			aria-hidden="true"
 		>
-			<path d={up ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+			<path d="m6 9 6 6 6-6" />
 		</svg>
 	);
 }
@@ -86,7 +93,7 @@ export const AnnotationBar = memo(function AnnotationBar() {
 			try {
 				const res = await b.list();
 				const next = res?.items ?? [];
-				const key = next.map((a) => `${a.id}:${a.selector}:${a.note}`).join("|");
+				const key = sigOf(next);
 				if (key === sig.current) return;
 				sig.current = key;
 				setItems(next);
@@ -113,7 +120,7 @@ export const AnnotationBar = memo(function AnnotationBar() {
 		try {
 			const res = await b.remove(file, id);
 			const next = res?.items ?? [];
-			sig.current = next.map((a) => `${a.id}:${a.selector}:${a.note}`).join("|");
+			sig.current = sigOf(next);
 			setItems(next);
 			if (!next.length) setOpen(false);
 		} catch {}
@@ -130,33 +137,36 @@ export const AnnotationBar = memo(function AnnotationBar() {
 			<button
 				type="button"
 				onClick={() => setOpen((v) => !v)}
-				className="inline-flex h-7 items-center gap-1.5 rounded-full border-[0.5px] border-border bg-surface px-2 text-ui-12 text-ink-2 shadow-soft transition-colors hover:bg-hover motion-reduce:transition-none"
+				className="flex items-center gap-1.5 rounded-full border border-border bg-surface/95 px-3 py-1.5 text-ui-12 leading-[calc(1_/_0.75)] text-ink-2 shadow-pop backdrop-blur transition-colors hover:bg-hover motion-reduce:transition-none"
 				aria-expanded={open}
 			>
-				<span className="text-ink-dim">
-					<PencilIcon />
-				</span>
+				<PencilIcon className="shrink-0 text-ink-faint" />
 				<span className="tabular-nums">{items.length} 条批注</span>
-				<Chevron up={open} />
+				<ChevronDownIcon open={open} />
 			</button>
 
 			{open && (
-				<div className="absolute bottom-full left-0 z-30 mb-1.5 w-[440px] overflow-hidden rounded-xl border-[0.5px] border-border bg-surface shadow-pop">
-					<div className="px-3 py-2 text-ui-11 text-ink-faint">页面批注 · 悬停右侧 × 删除</div>
-					<div className="max-h-[200px] overflow-y-auto thin-scrollbar pb-1">
+				<div className="absolute bottom-full left-0 z-30 mb-1 w-[440px] rounded-xl bg-surface p-1 shadow-pop">
+					<div className="flex items-center gap-1.5 px-2 py-1.5 pr-3 text-ui-12 leading-[calc(1_/_0.75)]">
+						<PencilIcon className="shrink-0 text-ink-faint" />
+						<span className="truncate text-ink-faint">页面批注</span>
+						<span className="ml-auto tabular-nums text-ink-faint">{items.length}</span>
+					</div>
+
+					<div className="fade-rule mb-1" />
+
+					<div className="thin-scrollbar max-h-64 overflow-y-auto [scrollbar-gutter:stable]">
 						{items.map((a, i) => (
 							<div
 								key={a.id}
-								className="group flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-hover motion-reduce:transition-none"
+								className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-ui-12 leading-[calc(1_/_0.75)] transition-colors hover:bg-hover motion-reduce:transition-none"
 							>
-								<span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent/10 text-ui-11 leading-none text-accent tabular-nums">
-									{i + 1}
-								</span>
-								<span className="max-w-[150px] shrink-0 truncate font-mono text-ui-11 text-ink-2">
+								<span className="w-3 shrink-0 tabular-nums text-ui-11 text-ink-faint">{i + 1}</span>
+								<span className="max-w-[150px] shrink-0 truncate font-mono text-ui-11 text-ink-dim">
 									{shortSelector(a.selector)}
 								</span>
-								<span className="flex-1 truncate text-ui-12 text-ink">
-									{a.note || <span className="text-ink-faint">（仅样式修改）</span>}
+								<span className={a.note ? "flex-1 truncate text-ink" : "flex-1 truncate text-ink-faint"}>
+									{a.note || "（仅样式修改）"}
 								</span>
 								<button
 									type="button"

@@ -1547,7 +1547,10 @@ async function launch() {
 	for (let i = 0; i < 80; i++) {
 		await sleep(120);
 		if (await portAlive(port)) {
-			writeState({ port, pid: child.pid, daemonPort: null, daemonPid: null });
+			// 必须同时续期 lastUsedAt：否则新起的浏览器带着上一次的陈旧时间戳，
+			// 下一条命令立刻又判定「idle 超时」→ 关掉刚开的浏览器 → 再重启一次，
+			// 表现就是 open 之后 shot/title 卡死、Chrome 停在 about:blank。
+			writeState({ port, pid: child.pid, daemonPort: null, daemonPid: null, lastUsedAt: Date.now() });
 			return port;
 		}
 	}
