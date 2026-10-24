@@ -80,7 +80,7 @@ bw console --errors
 | Capture output | Save screenshots and PDFs to disk and return their paths |
 | Debug complex layouts | Inspect frames, including out-of-process cross-origin iframes (OOPIFs) |
 | Reproduce device conditions | Emulate viewport sizes, throttle network or CPU, and inspect cookies and storage |
-| Collect human feedback | Annotate page elements and send notes and pasted screenshots to the pi composer |
+| Collect human feedback | Annotate page elements; notes and pasted screenshots ride along with your next message |
 
 ### Actions
 
@@ -136,7 +136,7 @@ await tools.browser({ action: "assert-text", target: "h1", arg: "Welcome" });
 
 Run `bw annotate` to enter annotation mode. Click an element to open a note composer below it, add a note, and press Enter to save. Paste screenshots with `⌘V`; click a numbered badge later to edit or delete its note. Press Esc to discard the current note.
 
-Selection freezes while the composer is open, so the note remains attached to the selected element. Annotations are stored per page URL with rich text, plain text, and pasted images. The extension watches the annotation file and sends saved notes to the pi composer; agents can read them with `ann` or `ann-export`. `annotate` and `pick` are interactive human actions, not ways for an agent to fabricate feedback.
+Selection freezes while the composer is open, so the note remains attached to the selected element. Annotations are stored per page URL with rich text, plain text, and pasted images. The extension watches the annotation file and attaches unsent notes to your next message as it is sent, so the composer never gets filled with text; agents can also read them directly with `ann` or `ann-export`. `annotate` and `pick` are interactive human actions, not ways for an agent to fabricate feedback.
 
 The sliders button on the left of the composer expands a **style tweak** panel for the selected element: text, text colour, background, opacity, font family and font size. Edits apply live through inline `!important` declarations so you see the result on the page itself, and `取消` restores the element to how it looked when the panel opened. Saving records a `from → to` diff per property next to your note, which is what makes the annotation actionable: the note says *what* should change and the diff says *from what to what*. Only properties you actually changed are recorded, and the diff is taken against the element's real computed style — the purple annotation highlight is stripped before reading, so it never shows up as the element's background.
 

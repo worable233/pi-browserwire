@@ -151,6 +151,15 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 	const file = annFile(resolveSession(opts.session));
 	const watchDir = dirname(file);
 
+	/** 已随消息发送过的批注：id + updatedAt，改动过的算新的 */
+	const sent = new Set<string>();
+	const itemSig = (a: Annotation) => `${a.id}:${a.updatedAt ?? 0}`;
+	const unsent = (items: Annotation[]) => items.filter((a) => !sent.has(itemSig(a)));
+
+	/**
+	 * 输入框保持干净：不再把批注正文塞进草稿，只提示数量，
+	 * 正文在发送时通过 context 事件附加到用户消息上（见下方 context 处理器）。
+	 */
 	const push = (ctx: any) => {
 		const items = readItems(file);
 		if (!items.length) return;
@@ -158,11 +167,12 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 		if (sig === lastSig) return;
 		lastSig = sig;
 		pending = items;
+		const n = unsent(items).length;
+		if (!n) return;
 		try {
-			ctx.ui.setEditorText(buildSummary(items));
-			ctx.ui.notify(`${items.length} 条页面批注已填入输入框`, "info");
+			ctx.ui.notify(`${n} 条页面批注将随消息附上`, "info");
 		} catch {
-			// headless modes have no composer
+			// headless modes have no UI
 		}
 	};
 
@@ -202,19 +212,27 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 	});
 
 	pi.registerCommand("bw-annotations", {
-		description: "Push browser annotations into the composer",
+		description: "Re-attach browser annotations to the next message",
 		handler: async (_a: string, ctx: any) => {
 			const items = readItems(file);
 			if (!items.length) {
 				ctx.ui.notify("No annotations. Run: bw annotate", "warning");
 				return;
 			}
+			// 清掉已发送标记，让下一条消息重新带上全部批注
+			sent.clear();
 			lastSig = "";
-			push(ctx);
+			pending = items;
+			ctx.ui.notify(`${items.length} 条批注将随下一条消息附上`, "info");
 		},
 	});
 
-	/** Attach screenshots to the outgoing message exactly once per signature. */
+	/**
+	 * Attach annotations — and their screenshots — to the outgoing user message.
+	 * This is the documented place where an extension may replace messages, and it
+	 * keeps the composer untouched: the user writes their own words, the annotation
+	 * rides along as an attachment.
+	 */
 	pi.on("context", async (event: any) => {
 		if (!pending.length) return;
 		const messages: any[] = event.messages ?? [];
@@ -234,17 +252,12 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 				: Array.isArray(msg.content)
 					? msg.content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n")
 					: "";
-		if (!text.includes("【页面批注】")) return;
 
-		const sig = sigOf(pending);
-		if (attached.has(sig)) return;
-		if (Array.isArray(msg.content) && msg.content.some((c: any) => c?.type === "image")) {
-			attached.add(sig);
-			return;
-		}
+		const todo = unsent(pending);
+		if (!todo.length) return;
 
 		const images: any[] = [];
-		for (const a of pending) {
+		for (const a of todo) {
 			if (!a.shot || !existsSync(a.shot)) continue;
 			try {
 				const buf = readFileSync(a.shot);
@@ -253,17 +266,18 @@ export function registerAnnotationBridge(pi: any, opts: { session?: string } = {
 				images.push({ type: "image", data: buf.toString("base64"), mimeType });
 			} catch {}
 		}
-		attached.add(sig);
-		if (!images.length) return;
 
+		// 老行为（批注正文已在草稿里）或用户手动粘贴时不要重复追加
+		const summary = text.includes("【批注】") || text.includes("【页面批注】") ? "" : buildSummary(todo);
+		if (!summary && !images.length) return;
+
+		const existing = Array.isArray(msg.content)
+			? msg.content
+			: [{ type: "text", text: String(msg.content ?? "") }];
 		const next = messages.slice();
-		next[idx] = {
-			...msg,
-			content: [
-				...(Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") }]),
-				...images,
-			],
-		};
+		next[idx] = { ...msg, content: [...existing, ...(summary ? [{ type: "text", text: summary }] : []), ...images] };
+
+		for (const a of todo) sent.add(itemSig(a));
 		return { messages: next };
 	});
 }

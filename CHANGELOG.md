@@ -58,6 +58,16 @@
   screen. Long property lists otherwise cover the element you are tweaking.
 
 ### Changed
+- **Annotations no longer get typed into the composer at all.** They are attached
+  to the outgoing message through the `context` event instead — the documented
+  place where an extension may replace messages — and a toast reports how many are
+  waiting. Your draft stays yours: write whatever you want, the annotation rides
+  along. Annotations are tracked by `id + updatedAt`, so each one is attached once,
+  editing one re-attaches only that one, and `bw-annotations` re-arms everything.
+  A Codex-style chip above the composer is not reachable from an extension: Percho
+  stubs `ctx.ui.setWidget()` to a no-op, exposes only four extension IPC channels
+  (dialog, editor-text, notify), and its UI plugin regions carry no annotation
+  data — the renderer cannot read files or reach 127.0.0.1 under its CSP.
 - **Annotation push into the composer is now two lines instead of a wall of
   markdown.** The old summary used `###` headings, the full percent-encoded URL,
   full selector chains, and wrapped each style change on its own line — it filled
