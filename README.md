@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 22+">
-  <img src="https://img.shields.io/badge/npm-not%20published-lightgrey?style=flat-square" alt="尚未发布到 npm">
+  <a href="https://www.npmjs.com/package/pi-browserwire"><img src="https://img.shields.io/npm/v/pi-browserwire?style=flat-square&color=cb3837&logo=npm&logoColor=white" alt="npm 版本"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT 许可证"></a>
 </p>
 
