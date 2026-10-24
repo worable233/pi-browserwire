@@ -57,6 +57,17 @@
   to move the panel anywhere in the viewport, clamped so it never leaves the
   screen. Long property lists otherwise cover the element you are tweaking.
 
+### Added
+- **Optional Percho patch: an annotation bar above the composer.** `percho/` holds a
+  lossless `app.asar` patcher that adds two things and nothing else: a `composer.top`
+  UI plugin region mounted between `ImageTray` and the input box, and
+  `window.PerchoUI.annotations` (`list` / `remove`) backed by a main-process
+  `bw:annotations` channel that reads the most recently touched
+  `~/.pi/bw/sessions/<name>/annotations.json`. `percho/composer-card/` is the plugin:
+  an `N 条批注` pill that expands on hover into a per-annotation list with a delete
+  button per row. The patch keeps every other asar entry byte-identical and re-checks
+  its anchors on every run, so a Percho upgrade fails loudly instead of half-patching.
+
 ### Changed
 - **Annotations no longer get typed into the composer at all.** They are attached
   to the outgoing message through the `context` event instead — the documented

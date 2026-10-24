@@ -1,0 +1,11 @@
+{
+	"name": "bw-annotations",
+	"version": "0.1.0",
+	"displayName": "浏览器批注条",
+	"description": "输入框上方的批注条：显示条数，悬停展开逐条删除",
+	"perchoUi": 1,
+	"main": "src/index.tsx",
+	"contributions": [
+		{ "id": "bar", "region": "composer.top", "export": "AnnotationBar", "title": "批注条" }
+	]
+}
